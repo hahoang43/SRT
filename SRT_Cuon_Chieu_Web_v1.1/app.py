@@ -492,7 +492,7 @@ class App(QMainWindow):
     def connect_and_open(self):
         """Check that ChatGPT Web and its chat editor are ready."""
         if not WEB_AVAILABLE or self.web_view is None:
-            self.show_notice('Máy thiếu QtWebEngine: không thể nhắn thử trong khung Web. '
+            self.show_notice('Máy thiếu QtWebEngine: không thể kiểm tra kết nối trong khung Web. '
                              'Hãy chạy run_windows.bat để cài đúng thư viện.')
             return
         if not self.web_panel.isVisible():
@@ -522,6 +522,18 @@ class App(QMainWindow):
         self.log('⚠ Kiểm tra ChatGPT Web không thành công: ' + explanation)
         QMessageBox.warning(self, 'Chưa kiểm tra được kết nối', explanation)
 
+    def _run_web_script(self, script: str, callback):
+        """Serialize objects explicitly across the Qt JavaScript/Python boundary."""
+        def decoded(value):
+            try:
+                result = json.loads(value) if isinstance(value, str) else value
+            except (TypeError, ValueError):
+                result = None
+            callback(result)
+
+        self.web_view.page().runJavaScript(
+            'JSON.stringify(' + script + ')', decoded)
+
     def _probe_web_connection(self):
         if self._connection_state != 'looking_for_editor' or self._probe_busy:
             return
@@ -534,7 +546,7 @@ class App(QMainWindow):
             return
         self._probe_busy = True
         state = self._connection_state
-        self.web_view.page().runJavaScript(PROBE_JS, lambda result: self._on_probe(result, state))
+        self._run_web_script(PROBE_JS, lambda result: self._on_probe(result, state))
 
     def _on_probe(self, probe, original_state: str):
         self._probe_busy = False
@@ -626,7 +638,7 @@ class App(QMainWindow):
         prompt = make_batch_prompt(self.auto_batch, self.prompt)
         self.auto_deadline = time.monotonic() + self.timeout_spin.value()
         self.web_status.setText(f'Đang gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
-        self.web_view.page().runJavaScript(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
+        self._run_web_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
 
     def _on_batch_probe(self, result, prompt: str):
         if not self.auto_session:
@@ -637,7 +649,7 @@ class App(QMainWindow):
         self.auto_baseline = int(result.get('assistantCount') or 0)
         self.auto_last_response = ''
         self.auto_stable_reads = 0
-        self.web_view.page().runJavaScript(make_send_message_js(prompt), self._on_batch_sent)
+        self._run_web_script(make_send_message_js(prompt), self._on_batch_sent)
 
     def _on_batch_sent(self, result):
         if not self.auto_session:
@@ -655,11 +667,11 @@ class App(QMainWindow):
             self._auto_failed('Hết thời gian chờ phản hồi JSON.')
             return
         self.auto_poll_busy = True
-        self.web_view.page().runJavaScript(READ_LATEST_RESPONSE_JS, self._on_batch_response)
+        self._run_web_script(READ_LATEST_RESPONSE_JS, self._on_batch_response)
 
     def _on_batch_response(self, result):
         self.auto_poll_busy = False
-        if not self.auto_session:
+        if not self.auto_session or not self.batch_waiting_for_json:
             return
         text = result.get('text', '') if isinstance(result, dict) else ''
         count = result.get('assistantCount', 0) if isinstance(result, dict) else 0
@@ -704,7 +716,6 @@ class App(QMainWindow):
     def _finish_auto_session(self):
         self.stop_translation()
         self.show_notice('Đã dịch tự động toàn bộ file SRT. Nhấn “Lưu SRT” để xuất.')
-        self.batch_waiting_for_json = True
 
     def apply_translations(self, mapping: dict[int, str]):
         for number, vi in mapping.items():

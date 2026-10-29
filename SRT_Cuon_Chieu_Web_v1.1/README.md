@@ -56,3 +56,11 @@ Nhấp đúp `build_exe_windows.bat` để cài PyInstaller và đóng gói vào
 - `run_windows.bat`, `build_exe_windows.bat`, `requirements.txt` — khởi chạy và đóng gói.
 
 Chạy kiểm thử: `python -m unittest -v test_engine test_web_connect`.
+
+### Kiểm thử kết nối và nhận phản hồi
+
+- Kiểm tra kết nối chỉ xác nhận tên miền và ô chat sẵn sàng, không gửi lời chào; khi thành công hiển thị thông báo.
+- Kết quả JavaScript được truyền qua JSON để QtWebEngine chuyển đầy đủ dữ liệu sang Python.
+- Bộ đọc phản hồi đếm nhất quán các tin nhắn assistant và ưu tiên JSON trong khối mã, tránh lấy nhãn ngôn ngữ/nút sao chép làm nội dung dịch.
+- Kiểm thử tích hợp cục bộ: `python -B -m unittest -v test_app_web_bridge` (cần PySide6/QtWebEngine). Trên Linux không màn hình, đặt `QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software`. Bộ kiểm thử DOM trong `test_web_connect` cần Node.js; nếu thiếu sẽ báo skipped.
+- Kiểm thử cục bộ không thay thế xác minh với tài khoản ChatGPT đang đăng nhập; giao diện Web thực tế vẫn có thể thay đổi.

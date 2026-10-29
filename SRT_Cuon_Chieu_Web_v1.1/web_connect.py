@@ -1,109 +1,29 @@
 """Bounded ChatGPT Web integration helpers for an embedded Qt web view.
 
-The connection test only confirms that an assistant response element appears.
+The connection test only checks the site and chat editor; it never sends a message.
 The translation flow reads the latest assistant text only to validate its JSON.
 No login automation, CAPTCHA solving, rate-limit handling, or scraping is used.
 Since chatgpt.com can change its HTML, this is best effort only.
 """
 
-GREETING = 'Xin chào'
+# Both probes use the same canonical assistant nodes in document order.
+_DOM_HELPERS = r"""
+  const shown = el => !!el && !!el.getClientRects().length &&
+    getComputedStyle(el).visibility !== 'hidden';
+  const assistantRows = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+"""
 
-# Check the domain and whether the chat editor is ready.
 PROBE_JS = r"""(() => {
   const host = window.location.hostname;
   if (host !== 'chatgpt.com' && host !== 'www.chatgpt.com') {
-    return {site: false, editor: false, assistantCount: 0, repliesWithText: 0};
+    return {site:false, editor:false, assistantCount:0};
   }
-  const selectors = [
-    '#prompt-textarea',
-    'textarea[name="prompt-textarea"]',
-    '[data-testid="prompt-textarea"]',
-    'textarea#mobile-composer-prompt',
-    '[contenteditable="true"][data-lexical-editor="true"]',
-    '[contenteditable="true"]'
-  ];
-  const shown = x => x && x.getClientRects().length &&
-    window.getComputedStyle(x).visibility !== 'hidden';
-  const editor = selectors.flatMap(s => [...document.querySelectorAll(s)]).find(shown);
-  const replies = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
-  return {
-    site: true,
-    editor: !!editor,
-    assistantCount: replies.length,
-    repliesWithText: replies.filter(el => Boolean((el.innerText || '').trim())).length
-  };
-})()"""
-
-# Fill only this app's one greeting; no credentials or any page content is accessed.
-FILL_GREETING_JS = r"""(() => {
-  if (!['chatgpt.com', 'www.chatgpt.com'].includes(location.hostname)) {
-    return {ok:false, why:'Khác tên miền ChatGPT'};
-  }
-  const sels = ['#prompt-textarea','textarea[name="prompt-textarea"]',
-                '[data-testid="prompt-textarea"]','textarea#mobile-composer-prompt',
-                '[contenteditable="true"][data-lexical-editor="true"]',
-                '[contenteditable="true"]'];
-  const editor = sels.flatMap(s => [...document.querySelectorAll(s)])
-    .find(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
-  if (!editor) return {ok:false, why:'Chưa thấy ô chat (có thể cần đăng nhập)'};
-  editor.focus();
-  const text = 'Xin chào';
-  if (editor.tagName.toLowerCase() === 'textarea') {
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(editor, text);
-    editor.dispatchEvent(new InputEvent('input', {
-      bubbles: true, inputType: 'insertText', data: text
-    }));
-  } else {
-    const sel = window.getSelection();
-    if (sel) { const range = document.createRange(); range.selectNodeContents(editor);
-      sel.removeAllRanges(); sel.addRange(range); }
-    const inserted = document.execCommand('insertText', false, text);
-    if (!inserted) {
-      editor.innerHTML = '';
-      editor.appendChild(document.createTextNode(text));
-      editor.dispatchEvent(new InputEvent('input', {
-        bubbles: true, inputType: 'insertText', data: text
-      }));
-    }
-  }
-  const insertedText = editor.value || editor.innerText || '';
-  return {ok: insertedText.includes(text), why:'Không điền được vào ô chat'};
-})()"""
-
-# Only click a visible enabled send control for the one greeting.
-SEND_GREETING_JS = r"""(() => {
-  if (!['chatgpt.com', 'www.chatgpt.com'].includes(location.hostname)) {
-    return {ok:false, why:'Trang đã đổi tên miền'};
-  }
-  const editorSels = ['#prompt-textarea','textarea[name="prompt-textarea"]',
-                '[data-testid="prompt-textarea"]','textarea#mobile-composer-prompt',
-                '[contenteditable="true"][data-lexical-editor="true"]',
-                '[contenteditable="true"]'];
-  const shown = el => el.getClientRects().length &&
-    getComputedStyle(el).visibility !== 'hidden';
-  const editor = editorSels.flatMap(s => [...document.querySelectorAll(s)])
-    .find(el => shown(el));
-  if (!editor) return {ok:false, why:'Không tìm thấy ô chat'};
-  const sels = ['button#composer-submit-button', '[data-testid="send-button"]',
-                'button[aria-label="Send message"]', 'button[aria-label="Send prompt"]',
-                'button[aria-label="Gửi tin nhắn"]', 'button[type="submit"]',
-                'button[aria-label*="Send"]', 'button[aria-label*="Gửi"]'];
-  const btn = sels.flatMap(s => [...document.querySelectorAll(s)])
-    .find(el => shown(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
-  if (btn) {
-    btn.click();
-    return {ok:true, method:'button'};
-  }
-  editor.dispatchEvent(new KeyboardEvent('keydown', {
-    bubbles:true, cancelable:true, key:'Enter', code:'Enter',
-    keyCode:13, which:13
-  }));
-  editor.dispatchEvent(new KeyboardEvent('keyup', {
-    bubbles:true, cancelable:true, key:'Enter', code:'Enter',
-    keyCode:13, which:13
-  }));
-  return {ok:true, method:'enter'};
+""" + _DOM_HELPERS + r"""
+  const editor = [...document.querySelectorAll(
+    '#prompt-textarea, textarea[name="prompt-textarea"], [data-testid="prompt-textarea"], ' +
+    'textarea#mobile-composer-prompt, [contenteditable="true"][data-lexical-editor="true"]'
+  )].find(el => shown(el) && !el.disabled && el.getAttribute('contenteditable') !== 'false');
+  return {site:true, editor:!!editor, assistantCount:assistantRows.length};
 })()"""
 
 def make_send_message_js(message: str) -> str:
@@ -152,44 +72,23 @@ def make_send_message_js(message: str) -> str:
 })()""" % json.dumps(message, ensure_ascii=False)
 
 READ_LATEST_RESPONSE_JS = r"""(() => {
-  const messageSelectors = [
-    '[data-message-author-role="assistant"]',
-    '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
-    'article[data-testid*="conversation-turn"]'
-  ];
-  const unique = [...new Set(messageSelectors.flatMap(selector =>
-    [...document.querySelectorAll(selector)]))];
-  const assistantRows = unique.filter(row =>
-    row.getAttribute('data-message-author-role') === 'assistant' ||
-    row.querySelector('[data-message-author-role="assistant"]'));
+  if (!['chatgpt.com', 'www.chatgpt.com'].includes(location.hostname)) {
+    return {site:false, assistantCount:0, text:'', generating:false};
+  }
+""" + _DOM_HELPERS + r"""
   const last = assistantRows[assistantRows.length - 1];
-  const stopSelectors = [
-    'button[aria-label*="Stop"]',
-    'button[aria-label*="Dừng"]',
-    '[data-testid*="stop"]',
-    'button[title*="Stop"]',
-    'button[title*="Dừng"]'
-  ];
-  const visible = el => el && el.getClientRects().length &&
-    getComputedStyle(el).visibility !== 'hidden';
-  const generating = stopSelectors.some(selector =>
-    [...document.querySelectorAll(selector)].some(visible));
-  const text = last ? (last.innerText || last.textContent || '').trim() : '';
-  return {
-    assistantCount: assistantRows.length,
-    text,
-    generating,
-    textLength: text.length
-  };
+  // Read code contents, not the surrounding language/copy buttons or prose.
+  const blocks = last ? [...last.querySelectorAll('pre code')]
+    .map(el => (el.textContent || '').trim()).filter(Boolean) : [];
+  const jsonBlock = blocks.find(text => {
+    try { const value = JSON.parse(text); return value && Array.isArray(value.items); }
+    catch (_) { return false; }
+  });
+  const content = last && (last.querySelector('.markdown') || last);
+  const text = jsonBlock || (content ? (content.innerText || content.textContent || '').trim() : '');
+  const generating = [...document.querySelectorAll(
+    '[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Dừng"], ' +
+    'button[title*="Stop"], button[title*="Dừng"]'
+  )].some(shown) || !!(last && last.querySelector('[data-is-streaming="true"], .result-streaming'));
+  return {site:true, assistantCount:assistantRows.length, text, generating, textLength:text.length};
 })()"""
-
-
-def response_appeared(probe: object, baseline: int) -> bool:
-    """Return whether a new non-empty assistant response is present."""
-    if not isinstance(probe, dict) or probe.get('site') is not True:
-        return False
-    count = probe.get('assistantCount')
-    nonempty = probe.get('repliesWithText')
-    return (isinstance(count, int) and not isinstance(count, bool) and
-            isinstance(nonempty, int) and not isinstance(nonempty, bool) and
-            count > baseline and nonempty > baseline)
