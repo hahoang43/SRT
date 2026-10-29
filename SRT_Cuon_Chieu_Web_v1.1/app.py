@@ -108,7 +108,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.1 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.2.1 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -135,12 +135,13 @@ class App(QMainWindow):
         self.auto_generation = 0
         self.auto_retries = {}
         self.auto_last_error = ''
+        self.auto_diagnostic = None
         self.next_batch_timer = QTimer(self)
         self.next_batch_timer.setSingleShot(True)
         self.next_batch_timer.timeout.connect(self._queue_next_auto_batch)
         self._build_ui()
         self._style()
-        self.log('Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.2.1 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -252,7 +253,7 @@ class App(QMainWindow):
         web_connect_group = QGroupBox('3. KẾT NỐI CHATGPT WEB — KHÔNG CẦN API')
         web_connect_layout = QVBoxLayout(web_connect_group)
         connect_note = QLabel('Nhấn Kết nối để mở ChatGPT trong app và kiểm tra ô chat đã sẵn sàng. '
-                              'Ứng dụng không tự gửi tin nhắn; nếu cần, hãy đăng nhập trên Web trước.')
+                              'Ứng dụng không tự gửi lời chào. Dùng được chế độ khách khi ChatGPT cho phép; không bắt đăng nhập ở phía ứng dụng.')
         connect_note.setWordWrap(True)
         web_connect_layout.addWidget(connect_note)
         self.test_btn = self._button('🧪 KIỂM TRA KẾT NỐI WEB', self.connect_and_open, 'light')
@@ -295,6 +296,7 @@ class App(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(200)
         log_layout.addWidget(self.log_text)
+        log_layout.addWidget(self._button('Sao chép nhật ký', self.copy_log))
         log_layout.addWidget(self._button('Xóa nhật ký', lambda: self.log_text.clear()))
         forms.addWidget(log_group)
         forms.addStretch()
@@ -372,6 +374,9 @@ class App(QMainWindow):
 
     def log(self, text: str):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
+
+    def copy_log(self):
+        QApplication.clipboard().setText('SRT WEB v1.2.1\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -532,10 +537,13 @@ class App(QMainWindow):
                 result = json.loads(value) if isinstance(value, str) else value
             except (TypeError, ValueError):
                 result = None
+            if isinstance(result, dict) and result.get('scriptError'):
+                self.log('⚠ Lỗi đọc Web: ' + str(result['scriptError']))
             callback(result)
 
         self.web_view.page().runJavaScript(
-            'JSON.stringify(' + script + ')', decoded)
+            '(() => { try { return JSON.stringify(' + script +
+            '); } catch (error) { return JSON.stringify({scriptError:String(error)}); } })()', decoded)
 
     def _probe_web_connection(self):
         if self._connection_state != 'looking_for_editor' or self._probe_busy:
@@ -650,9 +658,18 @@ class App(QMainWindow):
 
     def _run_batch_script(self, script, callback):
         generation = self.auto_generation
+        completed = False
         def current(result):
+            nonlocal completed
+            if completed:
+                return
+            completed = True
             if self.auto_session and self.auto_generation == generation:
                 callback(result)
+        def stalled():
+            if not completed and self.auto_session and self.auto_generation == generation:
+                current({'scriptError':'QtWebEngine không trả kết quả trong 10 giây.'})
+        QTimer.singleShot(10000, stalled)
         self._run_web_script(script, current)
 
     def _schedule_poll(self, delay=1200):
@@ -708,7 +725,14 @@ class App(QMainWindow):
             return
         text = result.get('text', '') if isinstance(result, dict) else ''
         count = result.get('assistantCount', 0) if isinstance(result, dict) else 0
+        if isinstance(result, dict) and result.get('scriptError'):
+            self._auto_failed('Không đọc được giao diện Web: ' + str(result['scriptError']))
+            return
         generating = bool(result.get('generating')) if isinstance(result, dict) else True
+        summary = (count, len(text), generating)
+        if summary != self.auto_diagnostic:
+            self.auto_diagnostic = summary
+            self.log(f'Web: {count} phản hồi; {len(text)} ký tự; đang tạo: {generating}.')
         changed = result.get('lastText', '') != self.auto_baseline_text if isinstance(result, dict) else False
         if (count <= self.auto_baseline and not changed) or not text:
             self.auto_last_response = ''
@@ -722,7 +746,8 @@ class App(QMainWindow):
             self.auto_stable_reads = 1
             self.auto_deadline = time.monotonic() + self.timeout_spin.value()
             self.web_status.setText(f'Đang nhận phản hồi: {len(text)} ký tự…')
-        if generating or self.auto_stable_reads < 2:
+        if self.auto_stable_reads < 2 or (generating and
+                (not isinstance(result, dict) or result.get('stopVisible', True) or self.auto_stable_reads < 4)):
             self._schedule_poll()
             return
         try:
@@ -740,6 +765,12 @@ class App(QMainWindow):
             self.auto_last_error = 'JSON phản hồi thiếu danh sách items.'
             self._schedule_poll()
             return
+        if generating:
+            try:
+                check_translations(self.auto_batch, parsed)
+            except (ValueError, TypeError):
+                self._schedule_poll()
+                return
         for cue in self.auto_batch:
             matches = [row for row in rows if isinstance(row, dict) and
                        type(row.get('id')) is int and row['id'] == cue.number]
@@ -768,6 +799,7 @@ class App(QMainWindow):
     def _auto_failed(self, message: str):
         self.batch_waiting_for_json = False
         self.stop_translation()
+        self.web_status.setText('Đã dừng: ' + message)
         self.log('⚠ Dịch tự động thất bại: ' + message)
         QMessageBox.warning(self, 'Dịch tự động thất bại', message)
 

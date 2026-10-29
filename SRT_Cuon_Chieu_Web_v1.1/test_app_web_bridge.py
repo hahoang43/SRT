@@ -2,6 +2,7 @@
 import unittest
 import json
 import time
+from unittest.mock import patch
 from PySide6.QtCore import QEventLoop, QTimer, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 from app import App
@@ -104,6 +105,38 @@ class WebBridgeTests(unittest.TestCase):
             self.assertEqual(len(values), 1)
             self.assertEqual(values[0]['assistantCount'], 1)
             self.assertEqual(values[0]['text'], payload)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_guest_json_fallback_excludes_user_content(self):
+        window = App()
+        loop = QEventLoop()
+        values = []
+        payload = '{"items":[{"id":1,"vi":"Chào bạn"}]}'
+        def received(value):
+            values.append(value)
+            loop.quit()
+        def loaded(ok):
+            if ok:
+                window._run_web_script(READ_LATEST_RESPONSE_JS.replace('location.hostname', "'chatgpt.com'"), received)
+            else:
+                loop.quit()
+        window.web_view.loadFinished.connect(loaded)
+        window.web_view.setHtml('<main><div class="markdown">' + payload + '</div>'
+            '<div data-turn="user"><div class="markdown">'
+            '{"items":[{"id":1,"vi":"Do not import"}]}</div></div></main>')
+        deadline = QTimer()
+        deadline.setSingleShot(True)
+        deadline.timeout.connect(loop.quit)
+        deadline.start(10000)
+        loop.exec()
+        deadline.stop()
+        try:
+            self.assertEqual(len(values), 1)
+            self.assertEqual(values[0]['text'], payload)
+            self.assertEqual(values[0]['assistantCount'], 1)
         finally:
             window.close()
             window.deleteLater()
@@ -239,6 +272,65 @@ button.onclick = () => {
             window._on_batch_response({'assistantCount':1, 'text':'new partial', 'lastText':'new partial', 'generating':True})
             self.assertGreater(window.auto_deadline, time.monotonic() + 10)
             self.assertEqual(len(window._missing()), 3)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_missing_javascript_callback_stops_with_diagnostic(self):
+        window = self.make_session()
+        timers, failures = [], []
+        window.batch_waiting_for_json = True
+        def failed(message):
+            failures.append(message)
+            window.stop_translation()
+        window._auto_failed = failed
+        try:
+            with patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)):
+                window._run_batch_script('script', window._on_batch_response)
+            self.assertEqual(len(timers), 1)
+            timers[0]()
+            self.assertFalse(window.auto_session)
+            self.assertEqual(len(failures), 1)
+            self.assertIn('10 giây', failures[0])
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_stale_streaming_class_does_not_block_complete_translation(self):
+        window = self.make_session()
+        try:
+            window.batch_spin.setValue(1)
+            window._queue_next_auto_batch()
+            window.auto_baseline = 0
+            window.auto_baseline_text = ''
+            result = {'assistantCount':1, 'text':'{"items":[{"id":1,"vi":"Xin chào"}]}',
+                      'lastText':'new', 'generating':True, 'stopVisible':False}
+            for _ in range(3):
+                window._on_batch_response(result)
+                self.assertEqual(window.model.cues[0].translation, '')
+            window._on_batch_response(result)
+            self.assertEqual(window.model.cues[0].translation, 'Xin chào')
+            self.assertTrue(window.next_batch_timer.isActive())
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_visible_stop_button_blocks_next_batch(self):
+        window = self.make_session()
+        try:
+            window.batch_spin.setValue(1)
+            window._queue_next_auto_batch()
+            window.auto_baseline = 0
+            window.auto_baseline_text = ''
+            result = {'assistantCount':1, 'text':'{"items":[{"id":1,"vi":"Xin chào"}]}',
+                      'lastText':'new', 'generating':True, 'stopVisible':True}
+            for _ in range(5):
+                window._on_batch_response(result)
+            self.assertEqual(window.model.cues[0].translation, '')
+            self.assertFalse(window.next_batch_timer.isActive())
         finally:
             window.close()
             window.deleteLater()

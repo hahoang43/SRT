@@ -73,3 +73,11 @@ Chạy kiểm thử: `python -m unittest -v test_engine test_web_connect`.
 - Dòng hợp lệ được điền vào bảng và lưu checkpoint ngay khi phản hồi hoàn tất. Dòng thiếu, trùng ID hoặc sai số dòng được thử lại riêng tối đa 2 lần; không xóa bản dịch đã nhận. Sau khi khắc phục, tiếp tục các lô còn lại.
 - Thời gian chờ là thời gian không có tiến triển; có ký tự mới sẽ gia hạn. Mỗi lô có giới hạn tổng cộng 15 phút. Lỗi JSON cụ thể được hiển thị thay vì chỉ chờ im lặng.
 - Kiểm thử: `python -B -m unittest -v test_engine test_web_connect test_app_web_bridge`. Bộ tích hợp gồm trang khách cục bộ, nút gửi bật trễ, gửi hai lô liên tiếp, cập nhật bảng, thử lại và bỏ qua callback của phiên đã dừng. Chưa xác minh với phiên ChatGPT khách thực tế trên Windows.
+
+### Chẩn đoán v1.2.1
+
+- Kiểm tra tiêu đề cửa sổ có **v1.2.1**. `git pull` không cập nhật file `.exe` đã đóng gói trước đó; dùng `run_windows.bat` hoặc build lại `.exe`.
+- Nhật ký ghi số phản hồi, số ký tự, trạng thái đang tạo và lỗi JavaScript; nút **Sao chép nhật ký** giúp gửi thông tin lỗi. Không ghi cookie, mật khẩu hoặc toàn văn phản hồi vào nhật ký chẩn đoán.
+- Khi CSS streaming còn sót, chỉ nhận JSON đầy đủ, đúng toàn bộ lô sau 4 lần đọc ổn định và khi nút Stop không còn hiển thị. Không gửi lô mới trong khi nút Stop còn xuất hiện.
+- Nếu QtWebEngine không trả callback trong 10 giây, dừng và báo lỗi thay vì đứng vô hạn.
+- Những kiểm thử dùng HTML cục bộ không xác nhận đăng nhập hay khả năng dùng ChatGPT khách trên một máy thực tế. Khi lỗi vẫn xảy ra, cần nhật ký và phiên bản đang chạy để chẩn đoán tiếp.

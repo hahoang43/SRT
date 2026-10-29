@@ -13,7 +13,7 @@ _DOM_HELPERS = r"""
   // Guest pages may omit author-role on the visible response. Select one
   // message per turn, in DOM order, without ever reading a user turn as a reply.
   const turns = [...document.querySelectorAll('[data-testid^="conversation-turn-"]')];
-  const assistantRows = turns.length ? turns.flatMap(turn => {
+  let assistantRows = turns.length ? turns.flatMap(turn => {
     if (turn.matches('[data-message-author-role="user"]') ||
         turn.querySelector('[data-message-author-role="user"]') ||
         turn.getAttribute('data-turn') === 'user') return [];
@@ -22,6 +22,19 @@ _DOM_HELPERS = r"""
       turn.querySelector('.markdown');
     return reply ? [reply] : [];
   }) : [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+  if (!assistantRows.length) {
+    // Fallback only to complete translation JSON in conversation content.
+    // Never inspect the whole page or use composer/user text as a response.
+    assistantRows = [...document.querySelectorAll('main .markdown, main pre code')].filter(el => {
+      if (el.closest('[data-message-author-role="user"], [data-turn="user"], form')) return false;
+      try {
+        const value = JSON.parse((el.innerText || el.textContent || '').trim());
+        return Array.isArray(value.items) && value.items.length > 0 &&
+          value.items.every(row => Number.isInteger(row.id) && typeof row.vi === 'string' && !('zh' in row));
+      } catch (_) { return false; }
+    });
+    assistantRows = assistantRows.filter(el => !assistantRows.some(other => other !== el && other.contains(el)));
+  }
   const lastReply = assistantRows[assistantRows.length - 1];
   const replyText = el => {
     const content = el && (el.querySelector('.markdown') || el);
@@ -112,9 +125,10 @@ READ_LATEST_RESPONSE_JS = r"""(() => {
   });
   const content = last && (last.querySelector('.markdown') || last);
   const text = jsonBlock || (content ? (content.innerText || content.textContent || '').trim() : '');
-  const generating = [...document.querySelectorAll(
+  const stopVisible = [...document.querySelectorAll(
     '[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Dừng"], ' +
     'button[title*="Stop"], button[title*="Dừng"]'
-  )].some(shown) || !!(last && last.querySelector('[data-is-streaming="true"], .result-streaming'));
-  return {site:true, assistantCount:assistantRows.length, text, lastText, generating, textLength:text.length};
+  )].some(shown);
+  const generating = stopVisible || !!(last && last.querySelector('[data-is-streaming="true"], .result-streaming'));
+  return {site:true, assistantCount:assistantRows.length, text, lastText, generating, stopVisible, textLength:text.length};
 })()"""
