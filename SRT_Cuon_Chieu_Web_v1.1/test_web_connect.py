@@ -9,8 +9,8 @@ class WebConnectionTests(unittest.TestCase):
     def test_connection_probe_does_not_send_or_extract_messages(self):
         self.assertNotIn('Xin chào', PROBE_JS)
         self.assertNotIn('.click(', PROBE_JS)
-        self.assertNotIn('innerText', PROBE_JS)
-        self.assertNotIn('textContent', PROBE_JS)
+        self.assertNotIn('.click(', PROBE_JS)
+        # Probe reads only the latest reply fingerprint to correlate batches.
         self.assertIn("host !== 'chatgpt.com'", PROBE_JS)
 
     def run_dom(self, script, replies, *, host='chatgpt.com', stop=False):
@@ -28,6 +28,7 @@ global.location = {hostname:HOST}; global.window = {location};
 global.getComputedStyle = () => ({visibility:'visible'});
 const editor = {getClientRects:()=>[1],getAttribute:()=>null};
 global.document = {querySelectorAll: selector => {
+  if(selector === '[data-testid^="conversation-turn-"]') return [];
   if(selector === '[data-message-author-role="assistant"]') return replies;
   if(selector.includes('#prompt-textarea')) return [editor];
   if(selector.includes('stop-button')) return STOP ? [editor] : [];

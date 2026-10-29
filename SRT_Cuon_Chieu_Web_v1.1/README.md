@@ -64,3 +64,12 @@ Chạy kiểm thử: `python -m unittest -v test_engine test_web_connect`.
 - Bộ đọc phản hồi đếm nhất quán các tin nhắn assistant và ưu tiên JSON trong khối mã, tránh lấy nhãn ngôn ngữ/nút sao chép làm nội dung dịch.
 - Kiểm thử tích hợp cục bộ: `python -B -m unittest -v test_app_web_bridge` (cần PySide6/QtWebEngine). Trên Linux không màn hình, đặt `QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software`. Bộ kiểm thử DOM trong `test_web_connect` cần Node.js; nếu thiếu sẽ báo skipped.
 - Kiểm thử cục bộ không thay thế xác minh với tài khoản ChatGPT đang đăng nhập; giao diện Web thực tế vẫn có thể thay đổi.
+
+### Chế độ khách và dịch nhiều lô
+
+- Không bắt buộc đăng nhập ở phía ứng dụng: dùng chế độ khách nếu ChatGPT hiển thị ô chat và cho gửi tin nhắn. Nút “Log in” trên trang là của ChatGPT. Khi dịch vụ yêu cầu đăng nhập hoặc giới hạn sử dụng, ứng dụng không thể bỏ qua điều kiện đó.
+- Mặc định 20 dòng/lô. Nút gửi được bấm sau khi ô chat cập nhật; không coi phím Enter giả lập là đã gửi thành công.
+- Nhận diện phản hồi theo từng lượt hội thoại, kể cả giao diện khách thiếu thuộc tính author-role. Chấp nhận JSON có phần giải thích bao quanh nhưng không tự sửa JSON bị cắt dở.
+- Dòng hợp lệ được điền vào bảng và lưu checkpoint ngay khi phản hồi hoàn tất. Dòng thiếu, trùng ID hoặc sai số dòng được thử lại riêng tối đa 2 lần; không xóa bản dịch đã nhận. Sau khi khắc phục, tiếp tục các lô còn lại.
+- Thời gian chờ là thời gian không có tiến triển; có ký tự mới sẽ gia hạn. Mỗi lô có giới hạn tổng cộng 15 phút. Lỗi JSON cụ thể được hiển thị thay vì chỉ chờ im lặng.
+- Kiểm thử: `python -B -m unittest -v test_engine test_web_connect test_app_web_bridge`. Bộ tích hợp gồm trang khách cục bộ, nút gửi bật trễ, gửi hai lô liên tiếp, cập nhật bảng, thử lại và bỏ qua callback của phiên đã dừng. Chưa xác minh với phiên ChatGPT khách thực tế trên Windows.

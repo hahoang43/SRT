@@ -30,7 +30,7 @@ from srt_engine import (
     Cue, DEFAULT_PROMPT, check_translations, extract_json, make_batch_prompt,
     parse_srt, read_text, restore_progress, save_progress, srt_contents,
 )
-from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, make_send_message_js
+from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js
 
 
 class CueTableModel(QAbstractTableModel):
@@ -108,7 +108,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.1 — API Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.1 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -132,6 +132,9 @@ class App(QMainWindow):
         self.auto_poll_busy = False
         self.auto_last_response = ''
         self.auto_stable_reads = 0
+        self.auto_generation = 0
+        self.auto_retries = {}
+        self.auto_last_error = ''
         self.next_batch_timer = QTimer(self)
         self.next_batch_timer.setSingleShot(True)
         self.next_batch_timer.timeout.connect(self._queue_next_auto_batch)
@@ -166,7 +169,7 @@ class App(QMainWindow):
         self.connection_label = QLabel('● Chưa kiểm tra ChatGPT Web')
         self.connection_label.setObjectName('status')
         top.addWidget(self.connection_label)
-        self.connect_btn = self._button('⚡ Mở kết nối API', self.connect_and_open, 'teal')
+        self.connect_btn = self._button('⚡ Mở ChatGPT Web', self.connect_and_open, 'teal')
         top.addWidget(self.connect_btn)
         self.web_btn = self._button('🌐 Hiện Web', self.toggle_web, 'gold')
         top.addWidget(self.web_btn)
@@ -260,13 +263,13 @@ class App(QMainWindow):
         settings = QFormLayout(settings_group)
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 150)
-        self.batch_spin.setValue(100)
+        self.batch_spin.setValue(20)
         settings.addRow('Dòng / lần:', self.batch_spin)
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(15, 300)
         self.timeout_spin.setValue(90)
         self.timeout_spin.setSuffix(' giây')
-        settings.addRow('Thời hạn test Web:', self.timeout_spin)
+        settings.addRow('Chờ khi Web không tiến triển:', self.timeout_spin)
         self.delay_spin = QSpinBox()
         self.delay_spin.setRange(0, 120)
         self.delay_spin.setValue(3)
@@ -503,7 +506,7 @@ class App(QMainWindow):
         self.connect_btn.setEnabled(False)
         self.test_btn.setEnabled(False)
         self._status('◌ Đang kiểm tra ChatGPT Web…', '#ab7700')
-        self.web_status.setText('Đang kiểm tra trang ChatGPT và ô chat. Nếu xuất hiện yêu cầu đăng nhập, hãy đăng nhập trực tiếp trong khung Web.')
+        self.web_status.setText('Đang kiểm tra ô chat. Không cần đăng nhập nếu ChatGPT cho phép dùng chế độ khách.')
         self.log('🔌 Bắt đầu kiểm tra Web; không tự gửi lời chào và không sử dụng OpenAI API key.')
         self.connection_timer.start()
         QTimer.singleShot(500, self._probe_web_connection)
@@ -538,7 +541,7 @@ class App(QMainWindow):
         if self._connection_state != 'looking_for_editor' or self._probe_busy:
             return
         if time.monotonic() >= self._connection_deadline:
-            self._connection_failed('Hết thời gian chờ. Hãy đăng nhập ChatGPT trong khung Web, '
+            self._connection_failed('Hết thời gian chờ. Hãy kiểm tra ChatGPT và ô chat trong khung Web, '
                                     'kiểm tra trang đã tải được, rồi nhấn Kết nối lại. '
                                     'Ứng dụng không tự đăng nhập hoặc vượt bước xác minh.')
             return
@@ -556,7 +559,7 @@ class App(QMainWindow):
             self.web_status.setText('Đang chờ chuyển đến chatgpt.com; có thể đang ở trang đăng nhập.')
             return
         if not probe.get('editor'):
-            self.web_status.setText('Đang chờ ô chat. Hãy đăng nhập nếu trang yêu cầu.')
+            self.web_status.setText('Đang chờ ô chat sẵn sàng; chế độ khách được hỗ trợ khi trang cho phép.')
             return
         self._end_connection_test()
         self._connection_state = 'success'
@@ -587,7 +590,7 @@ class App(QMainWindow):
 
     def _web_loaded_callback(self, loaded: bool):
         if loaded:
-            self.log('✓ Trang Web đã tải, có thể cần đăng nhập riêng.')
+            self.log('✓ Trang Web đã tải. Có thể dùng chế độ khách khi ô chat sẵn sàng.')
             if self._connection_state == 'looking_for_editor':
                 QTimer.singleShot(450, self._probe_web_connection)
             elif self._connection_state == 'idle':
@@ -613,6 +616,7 @@ class App(QMainWindow):
         if not self._missing():
             self.show_notice('Tất cả dòng đã có bản dịch.')
             return
+        self.auto_retries = {}
         self.auto_session = True
         self.auto_paused = False
         self.batch_waiting_for_json = False
@@ -633,23 +637,52 @@ class App(QMainWindow):
             self.stop_translation()
             self.show_notice('Đã có bản dịch cho tất cả ID. Nhấn “Lưu SRT” để xuất.')
             return
-        self.auto_batch = self._missing()[:self.batch_spin.value()]
+        self.auto_generation += 1
+        size = 1 if self._missing()[0].number in self.auto_retries else self.batch_spin.value()
+        self.auto_batch = self._missing()[:size]
         self.batch_waiting_for_json = True
         prompt = make_batch_prompt(self.auto_batch, self.prompt)
         self.auto_deadline = time.monotonic() + self.timeout_spin.value()
+        self.auto_hard_deadline = time.monotonic() + 900
+        self.auto_last_error = ''
         self.web_status.setText(f'Đang gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
-        self._run_web_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
+        self._run_batch_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
+
+    def _run_batch_script(self, script, callback):
+        generation = self.auto_generation
+        def current(result):
+            if self.auto_session and self.auto_generation == generation:
+                callback(result)
+        self._run_web_script(script, current)
+
+    def _schedule_poll(self, delay=1200):
+        generation = self.auto_generation
+        def current():
+            if self.auto_session and self.auto_generation == generation:
+                self._poll_batch_response()
+        QTimer.singleShot(delay, current)
 
     def _on_batch_probe(self, result, prompt: str):
         if not self.auto_session:
             return
         if not isinstance(result, dict) or not result.get('site') or not result.get('editor'):
-            self._auto_failed('Chưa sẵn sàng ô chat. Hãy đăng nhập và tải ChatGPT trước.')
+            self._auto_failed('Chưa thấy ô chat sẵn sàng. Có thể dùng chế độ khách nếu ChatGPT cho phép. Nếu trang yêu cầu đăng nhập hoặc báo giới hạn, phần mềm không thể tự bỏ qua.')
             return
         self.auto_baseline = int(result.get('assistantCount') or 0)
+        self.auto_baseline_text = result.get('lastText', '')
         self.auto_last_response = ''
         self.auto_stable_reads = 0
-        self._run_web_script(make_send_message_js(prompt), self._on_batch_sent)
+        self._run_batch_script(make_send_message_js(prompt), self._on_batch_prepared)
+
+    def _on_batch_prepared(self, result):
+        if not isinstance(result, dict) or not result.get('ok'):
+            self._auto_failed('Không điền được nội dung lô vào ô chat.')
+            return
+        generation = self.auto_generation
+        def send():
+            if self.auto_session and generation == self.auto_generation:
+                self._run_batch_script(SEND_MESSAGE_JS, self._on_batch_sent)
+        QTimer.singleShot(350, send)
 
     def _on_batch_sent(self, result):
         if not self.auto_session:
@@ -658,16 +691,16 @@ class App(QMainWindow):
             self._auto_failed(result.get('why', 'Không gửi được lô.') if isinstance(result, dict) else 'Không gửi được lô.')
             return
         self.log(f'✓ Đã gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}; đang chờ JSON.')
-        QTimer.singleShot(1500, self._poll_batch_response)
+        self._schedule_poll(1500)
 
     def _poll_batch_response(self):
         if not self.auto_session or not self.batch_waiting_for_json or self.auto_poll_busy:
             return
-        if time.monotonic() >= self.auto_deadline:
-            self._auto_failed('Hết thời gian chờ phản hồi JSON.')
+        if time.monotonic() >= min(self.auto_deadline, self.auto_hard_deadline):
+            self._auto_failed(self.auto_last_error or 'Không nhận được phản hồi mới hợp lệ trong thời gian chờ. Kiểm tra trang Web có yêu cầu đăng nhập hoặc báo giới hạn không.')
             return
         self.auto_poll_busy = True
-        self._run_web_script(READ_LATEST_RESPONSE_JS, self._on_batch_response)
+        self._run_batch_script(READ_LATEST_RESPONSE_JS, self._on_batch_response)
 
     def _on_batch_response(self, result):
         self.auto_poll_busy = False
@@ -676,30 +709,55 @@ class App(QMainWindow):
         text = result.get('text', '') if isinstance(result, dict) else ''
         count = result.get('assistantCount', 0) if isinstance(result, dict) else 0
         generating = bool(result.get('generating')) if isinstance(result, dict) else True
-        if count <= self.auto_baseline or not text:
+        changed = result.get('lastText', '') != self.auto_baseline_text if isinstance(result, dict) else False
+        if (count <= self.auto_baseline and not changed) or not text:
             self.auto_last_response = ''
             self.auto_stable_reads = 0
-            QTimer.singleShot(1200, self._poll_batch_response)
+            self._schedule_poll()
             return
         if text == self.auto_last_response:
             self.auto_stable_reads += 1
         else:
             self.auto_last_response = text
             self.auto_stable_reads = 1
+            self.auto_deadline = time.monotonic() + self.timeout_spin.value()
+            self.web_status.setText(f'Đang nhận phản hồi: {len(text)} ký tự…')
         if generating or self.auto_stable_reads < 2:
-            QTimer.singleShot(1200, self._poll_batch_response)
+            self._schedule_poll()
             return
         try:
             parsed = extract_json(text)
-            mapping = check_translations(self.auto_batch, parsed)
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            if time.monotonic() < self.auto_deadline:
-                QTimer.singleShot(1200, self._poll_batch_response)
-                return
-            self._auto_failed(f'JSON phản hồi không hợp lệ: {exc}')
+        except (ValueError, TypeError) as exc:
+            self.auto_last_error = f'Không đọc được JSON phản hồi: {exc}'
+            self.web_status.setText(self.auto_last_error)
+            self._schedule_poll()
             return
+        # Retain valid cues even when another cue has wrong line count or is
+        # missing. Only rejected cues are retried, individually and boundedly.
+        mapping, errors = {}, []
+        rows = parsed.get('items')
+        if not isinstance(rows, list):
+            self.auto_last_error = 'JSON phản hồi thiếu danh sách items.'
+            self._schedule_poll()
+            return
+        for cue in self.auto_batch:
+            matches = [row for row in rows if isinstance(row, dict) and
+                       type(row.get('id')) is int and row['id'] == cue.number]
+            try:
+                mapping.update(check_translations([cue], {'items': matches}))
+            except (ValueError, TypeError) as exc:
+                errors.append(f'ID {cue.number}: {exc}')
+                self.auto_retries[cue.number] = self.auto_retries.get(cue.number, 0) + 1
+        if errors:
+            self.log('⚠ ' + '; '.join(errors[:3]))
+        for number in mapping:
+            self.auto_retries.pop(number, None)
         self.apply_translations(mapping)
         self.log(f'✓ Đã nhận tự động {len(mapping)} ID.')
+        self.web_status.setText(f'Đã cập nhật {len(mapping)} dòng vào bảng dịch.')
+        if any(self.auto_retries.get(c.number, 0) > 2 for c in self.auto_batch if c.number not in mapping):
+            self._auto_failed('Phản hồi vẫn sai sau 2 lần thử lại. ' + '; '.join(errors[:3]))
+            return
         self.batch_waiting_for_json = False
         self.auto_batch = []
         if self._missing():
@@ -745,6 +803,8 @@ class App(QMainWindow):
                 self._queue_next_auto_batch()
 
     def stop_translation(self):
+        self.auto_generation += 1
+        self.auto_poll_busy = False
         self.next_batch_timer.stop()
         self.auto_session = False
         self.auto_paused = False

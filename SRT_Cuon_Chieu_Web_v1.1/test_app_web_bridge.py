@@ -1,6 +1,8 @@
 """Integration test: run with QT_QPA_PLATFORM=offscreen on headless machines."""
 import unittest
-from PySide6.QtCore import QEventLoop, QTimer
+import json
+import time
+from PySide6.QtCore import QEventLoop, QTimer, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 from app import App
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS
@@ -11,6 +13,7 @@ class WebBridgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.qt = QApplication.instance() or QApplication([])
+        cls.qt.setQuitOnLastWindowClosed(False)
 
     def test_local_web_response_reaches_translation_table(self):
         window = App()
@@ -69,6 +72,212 @@ class WebBridgeTests(unittest.TestCase):
             self.assertFalse(window.batch_waiting_for_json)
         finally:
             window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_guest_dom_without_author_role(self):
+        window = App()
+        loop = QEventLoop()
+        values = []
+        payload = '{"items":[{"id":1,"vi":"Chào bạn"}]}'
+        html = ('<article data-testid="conversation-turn-1" data-turn="user">'
+                '<div data-message-author-role="user"><div class="markdown">DO NOT READ</div></div></article>'
+                '<article data-testid="conversation-turn-2"><div class="markdown">'
+                + payload + '</div></article>')
+        def received(value):
+            values.append(value)
+            loop.quit()
+        def loaded(ok):
+            if ok:
+                window._run_web_script(READ_LATEST_RESPONSE_JS.replace('location.hostname', "'chatgpt.com'"), received)
+            else:
+                loop.quit()
+        window.web_view.loadFinished.connect(loaded)
+        window.web_view.setHtml(html)
+        deadline = QTimer()
+        deadline.setSingleShot(True)
+        deadline.timeout.connect(loop.quit)
+        deadline.start(10000)
+        loop.exec()
+        deadline.stop()
+        try:
+            self.assertEqual(len(values), 1)
+            self.assertEqual(values[0]['assistantCount'], 1)
+            self.assertEqual(values[0]['text'], payload)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_guest_page_sends_two_batches_and_populates_table(self):
+        window = App()
+        loop = QEventLoop()
+        notices = []
+        window.model.load_cues(parse_srt(
+            '1\n00:00:01,000 --> 00:00:02,000\n你好\n\n'
+            '2\n00:00:02,000 --> 00:00:03,000\n再见\n'))
+        window.batch_spin.setValue(1)
+        window.delay_spin.setValue(0)
+        # Run the production scripts on a local guest-page fixture.
+        original = window._run_web_script
+        window._run_web_script = lambda script, callback: original(
+            script.replace('window.location.hostname', "'chatgpt.com'")
+                  .replace('location.hostname', "'chatgpt.com'"), callback)
+        def notice(message):
+            notices.append(message)
+            loop.quit()
+        window.show_notice = notice
+        failures = []
+        def failed(message):
+            failures.append(message)
+            window.stop_translation()
+            loop.quit()
+        window._auto_failed = failed
+        html = r'''<textarea id="prompt-textarea"></textarea>
+<button id="composer-submit-button" disabled>Send</button><main></main>
+<script>
+let sent = 0;
+const editor = document.querySelector('textarea');
+const button = document.querySelector('button');
+editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, 100));
+button.onclick = () => {
+  sent++;
+  const turn = document.createElement('article');
+  turn.dataset.testid = 'conversation-turn-' + sent;
+  const content = document.createElement('div');
+  content.className = 'markdown';
+  content.textContent = JSON.stringify({items:[{id:sent, vi:sent === 1 ? 'Xin chào' : 'Tạm biệt'}]});
+  turn.appendChild(content); document.querySelector('main').appendChild(turn);
+  editor.value = ''; button.disabled = true;
+};
+</script>'''
+        def loaded(ok):
+            if ok:
+                window.web_panel.show()  # Prevent start_translation from loading a remote page.
+                window.start_translation()
+            else:
+                loop.quit()
+        window.web_view.loadFinished.connect(loaded)
+        window.show()
+        window.web_panel.show()
+        window.web_view.setHtml(html)
+        deadline = QTimer()
+        deadline.setSingleShot(True)
+        deadline.timeout.connect(loop.quit)
+        deadline.start(15000)
+        loop.exec()
+        deadline.stop()
+        try:
+            self.assertEqual(failures, [])
+            self.assertEqual([c.translation for c in window.model.cues], ['Xin chào', 'Tạm biệt'])
+            self.assertFalse(window.auto_session)
+            self.assertEqual(len(notices), 1)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def make_session(self):
+        window = App()
+        window.show_notice = lambda message: None
+        window.model.load_cues(parse_srt(
+            '1\n00:00:01,000 --> 00:00:02,000\n你好\n\n'
+            '2\n00:00:02,000 --> 00:00:03,000\n别担心\n我帮你\n\n'
+            '3\n00:00:03,000 --> 00:00:04,000\n再见\n'))
+        window.auto_session = True
+        window.auto_retries = {}
+        window.delay_spin.setValue(0)
+        window.batch_spin.setValue(2)
+        window._schedule_poll = lambda *args: None
+        # Avoid external browsing; drive only the app's actual batch callbacks.
+        window._run_web_script = lambda script, callback: None
+        return window
+
+    def deliver(self, window, rows, *, count=1, text_prefix=''):
+        window.auto_baseline = 0
+        window.auto_baseline_text = ''
+        result = {'assistantCount':count, 'text':text_prefix + json.dumps({'items':rows}),
+                  'generating':False}
+        window._on_batch_response(result)
+        window._on_batch_response(result)
+
+    def test_multiple_batches_and_retry_only_invalid_lines(self):
+        window = self.make_session()
+        try:
+            window._queue_next_auto_batch()
+            window._on_batch_probe({'site':True,'editor':True,'assistantCount':0}, 'prompt')
+            self.deliver(window, [{'id':1,'vi':'Xin chào'}, {'id':2,'vi':'Sai số dòng'}],
+                         text_prefix='Kết quả JSON:\n')
+            self.assertEqual(window.model.cues[0].translation, 'Xin chào')
+            self.assertEqual(window.model.cues[1].translation, '')
+            self.assertTrue(window.next_batch_timer.isActive())
+            window.next_batch_timer.stop()
+            window._queue_next_auto_batch()
+            self.assertEqual([c.number for c in window.auto_batch], [2])
+            self.deliver(window, [{'id':2,'vi':'Đừng lo\nTôi giúp bạn'}])
+            window.next_batch_timer.stop()
+            window._queue_next_auto_batch()
+            self.assertEqual([c.number for c in window.auto_batch], [3])
+            self.deliver(window, [{'id':3,'vi':'Tạm biệt'}])
+            self.assertFalse(window.auto_session)
+            self.assertFalse(window.batch_waiting_for_json)
+            self.assertEqual(len(window._missing()), 0)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_streaming_extends_idle_timeout_and_old_reply_is_ignored(self):
+        window = self.make_session()
+        try:
+            window._queue_next_auto_batch()
+            window.auto_baseline = 1
+            window.auto_baseline_text = 'old'
+            window.auto_deadline = time.monotonic() + 1
+            window._on_batch_response({'assistantCount':1, 'text':'old', 'lastText':'old', 'generating':False})
+            self.assertEqual(window.auto_last_response, '')
+            window._on_batch_response({'assistantCount':1, 'text':'new partial', 'lastText':'new partial', 'generating':True})
+            self.assertGreater(window.auto_deadline, time.monotonic() + 10)
+            self.assertEqual(len(window._missing()), 3)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_stopped_session_ignores_pending_web_callback(self):
+        window = self.make_session()
+        callbacks, received = [], []
+        window._run_web_script = lambda script, callback: callbacks.append(callback)
+        try:
+            window._run_batch_script('test', received.append)
+            window.stop_translation()
+            window.auto_session = True
+            callbacks[0]({'ok':True})
+            self.assertEqual(received, [])
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_retries_are_bounded_and_valid_translations_retained(self):
+        window = self.make_session()
+        failures = []
+        def failed(message):
+            failures.append(message)
+            window.stop_translation()
+        window._auto_failed = failed
+        try:
+            for attempt in range(3):
+                window._queue_next_auto_batch()
+                self.deliver(window, [{'id':1,'vi':'Xin chào'}, {'id':2,'vi':'Sai số dòng'}])
+                window.next_batch_timer.stop()
+            self.assertEqual(len(failures), 1)
+            self.assertIn('2 lần thử lại', failures[0])
+            self.assertEqual(window.model.cues[0].translation, 'Xin chào')
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 if __name__ == '__main__':

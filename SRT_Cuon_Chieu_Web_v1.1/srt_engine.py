@@ -145,7 +145,28 @@ def extract_json(value: str) -> dict:
     fenced = re.match(r'^```(?:json)?\s*\n([\s\S]*?)\n```\s*$', value, flags=re.I)
     if fenced:
         value = fenced.group(1).strip()
-    result = json.loads(value)
+    try:
+        result = json.loads(value)
+    except json.JSONDecodeError as original:
+        # ChatGPT may wrap a plain JSON object in prose or a language label.
+        # Decode complete objects only; never repair or accept truncated JSON.
+        candidates = []
+        decoder = json.JSONDecoder()
+        offset = 0
+        while offset < len(value):
+            start = value.find('{', offset)
+            if start < 0:
+                break
+            try:
+                candidate, length = decoder.raw_decode(value[start:])
+                if isinstance(candidate, dict) and isinstance(candidate.get('items'), list):
+                    candidates.append(candidate)
+                offset = start + length
+            except json.JSONDecodeError:
+                offset = start + 1
+        if len(candidates) != 1:
+            raise original
+        result = candidates[0]
     if not isinstance(result, dict):
         raise ValueError('Kết quả cần là JSON object.')
     return result

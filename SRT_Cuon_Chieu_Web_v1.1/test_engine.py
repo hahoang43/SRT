@@ -47,6 +47,14 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(blank[0].translation, 'Xin chào')
             self.assertEqual(restore_progress(path, SRC+' ', parse_srt(SRC)), 0)
 
+    def test_json_surrounded_by_prose_and_reject_truncation(self):
+        payload = '{"items":[{"id":1,"vi":"Chào"}]}'
+        self.assertEqual(extract_json('Kết quả:\n' + payload + '\nHoàn tất.'), json.loads(payload))
+        with self.assertRaises(ValueError):
+            extract_json(payload[:-2])
+        with self.assertRaises(ValueError):
+            extract_json(payload + '\n' + payload)
+
     def test_manual_json_and_prompt(self):
         obj = extract_json('```json\n{"items":[]}\n```')
         self.assertEqual(obj, {'items': []})
