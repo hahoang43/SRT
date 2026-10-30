@@ -51,8 +51,10 @@ class WebBridge:
         self.read_js = builtin.READ_LATEST_RESPONSE_JS
         if self.native:
             native_read = _script(handler.get_read_js())
+            self.original_read_js = native_read
             native_read = re.sub(r'targetNode\.scrollIntoView\([^;]*\);', '', native_read)
             native_read = re.sub(r'box\.scrollTop\s*=\s*box\.scrollHeight\s*;', '', native_read)
+            self.sanitized_read_js = native_read
             self.probe_js = self._reader(builtin.PROBE_JS, native_read, probe=True)
             self.read_js = self._reader(builtin.READ_LATEST_RESPONSE_JS, native_read)
 
@@ -211,6 +213,8 @@ def load_web_bridge():
             raise ImportError('Không tìm thấy bộ nạp module ai_chatgpt.')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return WebBridge(module.ChatGPTHandler, 'Đang dùng module ai_chatgpt.pyd do người dùng cung cấp.')
+        bridge = WebBridge(module.ChatGPTHandler, 'Đang dùng module ai_chatgpt.pyd do người dùng cung cấp.')
+        sys.modules['ai_chatgpt'] = module
+        return bridge
     except Exception as error:
         return WebBridge(status=f'Không nạp được ai_chatgpt.pyd: {error}. Đang dùng bộ Web tích hợp.')

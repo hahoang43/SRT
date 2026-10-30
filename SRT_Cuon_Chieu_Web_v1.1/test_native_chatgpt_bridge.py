@@ -50,7 +50,7 @@ class NativeBridgeTests(unittest.TestCase):
 
     def test_supported_windows_loader_uses_expected_handler(self):
         spec = SimpleNamespace(loader=Mock())
-        with patch('native_chatgpt_bridge.sys.platform','win32'), patch('native_chatgpt_bridge.sys.version_info',(3,12,0)), patch('native_chatgpt_bridge.struct.calcsize',return_value=8), patch('native_chatgpt_bridge.importlib.util.spec_from_file_location',return_value=spec), patch('native_chatgpt_bridge.importlib.util.module_from_spec',return_value=SimpleNamespace(ChatGPTHandler=FakeHandler)):
+        with patch.dict('sys.modules'), patch('native_chatgpt_bridge.sys.platform','win32'), patch('native_chatgpt_bridge.sys.version_info',(3,12,0)), patch('native_chatgpt_bridge.struct.calcsize',return_value=8), patch('native_chatgpt_bridge.importlib.util.spec_from_file_location',return_value=spec), patch('native_chatgpt_bridge.importlib.util.module_from_spec',return_value=SimpleNamespace(ChatGPTHandler=FakeHandler)):
             bridge = load_web_bridge()
         self.assertTrue(bridge.native)
         spec.loader.exec_module.assert_called_once()

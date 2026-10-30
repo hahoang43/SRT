@@ -333,6 +333,79 @@ class WebBridgeTests(unittest.TestCase):
             window.deleteLater()
             QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
 
+    def test_zk_view_ai_handler_and_srt_controller_share_one_page(self):
+        from types import SimpleNamespace
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+        from native_chatgpt_bridge import WebBridge
+        from zk_web_bridge import ZKSupport
+        from test_native_chatgpt_bridge import FakeHandler
+        class ScrollingHandler(FakeHandler):
+            @staticmethod
+            def get_read_js():
+                return FakeHandler.get_read_js().replace('const replies =', "const targetNode=document.querySelector('main');targetNode.scrollIntoView({block:'end'});const replies =")
+        class ZKView(QWebEngineView):
+            calls = 0
+            profiles = []
+            scroll_calls = []
+            def get_last_response(self, callback):
+                type(self).calls += 1
+                type(self).profiles.append(self.page().profile().persistentStoragePath())
+                def collected(value):
+                    def checked(count):
+                        type(self).scroll_calls.append(count)
+                        callback(value)
+                    self.page().runJavaScript('window.scrollCalls', checked)
+                def prepared(_):
+                    self.page().runJavaScript(ScrollingHandler.get_read_js(), collected)
+                self.page().runJavaScript('window.scrollCalls=0;Element.prototype.scrollIntoView=()=>window.scrollCalls++;', prepared)
+            def send_prompt_safe(self, *args):
+                raise AssertionError('SRT must own the only sender')
+        module = SimpleNamespace(ChatGPTWebView=ZKView)
+        bridge = WebBridge(ScrollingHandler)
+        empty_reader="(() => ({site:true,text:'',lastText:'',assistantCount:0,generating:false}))()"
+        with patch('app.ZK_SUPPORT',ZKSupport(module)),patch('app.WEB_BRIDGE',bridge),patch('app.PROBE_JS',bridge.probe_js),patch('app.READ_LATEST_RESPONSE_JS',empty_reader),patch('app.read_with_capture',side_effect=lambda script,request_id:script):
+            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>')
+        self.assertGreater(ZKView.calls,0)
+        self.assertEqual(ZKView.scroll_calls,[0]*len(ZKView.scroll_calls))
+        self.assertTrue(all(Path(path).name=='chatgpt_profile' for path in ZKView.profiles))
+
+    def test_complete_native_response_is_not_delayed_by_zk_reader(self):
+        window=self.make_session()
+        window.zk_reader_enabled=True
+        results=[]
+        window._on_batch_response=results.append
+        try:
+            window._queue_next_auto_batch()
+            base={'site':True,'captured':True,'text':json.dumps({'items':[{'id':1,'vi':'Xin chào'},{'id':2,'vi':'Đừng lo\nTôi giúp bạn'}]})}
+            with patch.object(window.web_view,'get_last_response',create=True) as read:
+                window._read_zk_response(base)
+            read.assert_not_called()
+            self.assertEqual(results,[base])
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
+    def test_zk_timeout_falls_back_once_and_ignores_late_callback(self):
+        window=self.make_session()
+        timers, callbacks, results = [], [], []
+        window.zk_reader_enabled=True
+        window._on_batch_response=results.append
+        base={'site':True,'text':'base','generating':False}
+        try:
+            with patch.object(window.web_view,'get_last_response',side_effect=callbacks.append,create=True),patch('app.QTimer.singleShot',side_effect=lambda delay,fn:timers.append(fn)):
+                window._read_zk_response(base)
+            timers[0]()
+            self.assertFalse(window.zk_reader_enabled)
+            self.assertEqual(len(results),1)
+            callbacks[0]({'text':'late','is_generating':False})
+            self.assertEqual(len(results),1)
+            self.assertEqual(results[0]['text'],'base')
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
     def _assert_two_batches(self, editor_markup, keep_draft=False):
         window = App()
         loop = QEventLoop()

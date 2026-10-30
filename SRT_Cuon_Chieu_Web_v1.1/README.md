@@ -159,3 +159,17 @@ Tùy chọn **Tự phục hồi khi Web chậm** bật mặc định. Khi kiểm
 Phục hồi đọc phản hồi chỉ đọc lại lô đang chờ, không tạo prompt mới hay gửi lại yêu cầu. Với module native, chỉ tiếp tục callback chờ nút của chính yêu cầu hiện tại khi chưa bấm gửi; nếu đã bấm thì chỉ kiểm tra xác nhận. Bộ đếm callback bảo đảm không bấm lần hai. Dừng/đóng cửa sổ hoặc sang lô mới hủy các lần phục hồi còn chờ. Giới hạn chờ phản hồi tối đa 15 phút vẫn áp dụng; thông báo yêu cầu chờ của ChatGPT được xử lý riêng.
 
 Nhật ký ghi rõ giai đoạn và số lần phục hồi. Hết ngân sách thử lại, JSON vẫn sai hoặc dịch vụ yêu cầu hành động thủ công thì ứng dụng vẫn dừng và giữ tiến độ. Đây là tăng khả năng chịu lỗi tạm thời, không phải bảo đảm ChatGPT Web chạy không lỗi hoặc không giới hạn. Quy trình dài qua API có cấu trúc hoặc mô hình cục bộ có thể giảm phụ thuộc DOM; backend hiện tại vẫn dùng ChatGPT Web theo lựa chọn của người dùng.
+
+### v1.5.0: Kết hợp SRT + ZK_API_WEB + ai_chatgpt
+
+Đã kèm hai binary do người dùng cung cấp, nguyên byte và kiểm tra SHA-256 trước khi nạp:
+- ai_chatgpt.cp312-win_amd64.pyd
+- ZK_API_WEB_v2_0_7.cp312-win_amd64.pyd (f571098555a2810658881f1203d9a5da4ee5512e368c4c8d37491d3dc060437f).
+
+Cần Python 3.12 Windows 64-bit. run_windows.bat vẫn mở một ứng dụng SRT. Khi ZK nạp được và ChatGPTWebView tương thích, SRT sử dụng widget Web này trên chính trang/profile SRT hiện có; không khởi tạo ChatGPTTranslatorApp, không gọi reset-session/cleanup cookie hoặc bộ gửi riêng của ZK. ai_chatgpt đảm nhiệm gửi/đọc; ZK get_last_response(callback) bổ sung đọc khi kết quả hiện tại chưa đủ cho lô. Controller SRT duy nhất quản lý ID, timestamp, chống gửi trùng, thời gian chờ và checkpoint.
+
+Nếu đã có JSON hợp lệ cho lô hiện tại, không đợi thêm ZK. Nếu callback ZK lỗi hoặc chậm quá 5 giây, báo trong nhật ký và chuyển về ai_chatgpt/SRT; callback đến muộn không được nhập lần hai. Trang dùng chung chỉ loại thao tác cuộn của đúng script đọc native đã biết, không sửa script chứa dữ liệu SRT.
+
+Nhật ký khởi động phải có “Đang dùng ZK ChatGPTWebView và bộ đọc ZK cùng ai_chatgpt.pyd.” để xác nhận đã chọn khung ZK. Dòng zkReader: true cho biết đã gọi thành công bộ đọc bổ sung. Nếu ghi “ZK Web còn thiếu module đi kèm: ...”, cần cung cấp đúng module được nêu (ví dụ ai_gemini hoặc ai_deepseek nếu binary nhập bắt buộc); chỉ hai file hiện tại chưa chứng minh được toàn bộ phụ thuộc đã đủ. Ứng dụng tiếp tục bằng khung SRT và ghi rõ trạng thái, không giả vờ ZK đã nạp.
+
+Spec đóng gói kèm cả hai binary và các module chuẩn dùng trong ZK. Chạy kiểm thử bằng: python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_zk_web_bridge test_response_capture test_app_web_bridge. Linux kiểm thử giao thức/API giả lập trên QtWebEngine, hash binary, cùng profile, một bộ gửi, callback chậm và module thiếu. Chưa chạy hai DLL thật hoặc build .exe trên Windows; không khẳng định loại bỏ giới hạn dịch vụ.
