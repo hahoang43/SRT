@@ -13,7 +13,7 @@ import time
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, Signal, QUrl, QSettings
 from PySide6.QtGui import QColor, QBrush, QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QSpinBox, QSplitter, QTableView, QVBoxLayout,
@@ -31,7 +31,7 @@ from srt_engine import (
     parse_srt, read_text, restore_progress, save_progress, srt_contents,
 )
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js, REVEAL_EDITOR_JS
-from native_chatgpt_bridge import load_web_bridge, NATIVE_SEND_ACK_JS
+from native_chatgpt_bridge import load_web_bridge, NATIVE_SEND_ACK_JS, RESUME_NATIVE_WAIT_JS
 from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
 
 WEB_BRIDGE = load_web_bridge()
@@ -114,7 +114,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.3.3 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.4.0 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -140,6 +140,8 @@ class App(QMainWindow):
         self.auto_stable_reads = 0
         self.auto_generation = 0
         self.auto_retries = {}
+        self.auto_recovery_counts = {}
+        self.auto_recovering = False
         self.auto_last_error = ''
         self.auto_diagnostic = None
         self.auto_send_state = 'idle'
@@ -153,7 +155,7 @@ class App(QMainWindow):
         self.service_wait_timer.timeout.connect(self._tick_service_wait)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.3.3 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.4.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
         self.log(WEB_BRIDGE.status)
 
     def _button(self, text: str, action, kind: str = ''):
@@ -289,6 +291,10 @@ class App(QMainWindow):
         self.delay_spin.setValue(3)
         self.delay_spin.setSuffix(' giây')
         settings.addRow('Chờ giữa lô:', self.delay_spin)
+        self.auto_recover_checkbox = QCheckBox('Tự phục hồi khi Web chậm')
+        self.auto_recover_checkbox.setToolTip('Tối đa 3 lần phục hồi mỗi giai đoạn, nghỉ 5 giây trước khi kiểm tra lại. Không gửi lại lô đã bấm gửi.')
+        self.auto_recover_checkbox.setChecked(True)
+        settings.addRow(self.auto_recover_checkbox)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setFormat('%v% · Đã dịch %p%')
@@ -390,7 +396,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.3.3\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.4.0\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -667,6 +673,8 @@ class App(QMainWindow):
             self.show_notice('Tất cả dòng đã có bản dịch.')
             return
         self.auto_retries = {}
+        self.auto_recovery_counts = {}
+        self.auto_recovering = False
         self.auto_session = True
         self.auto_paused = False
         self.batch_waiting_for_json = False
@@ -688,6 +696,8 @@ class App(QMainWindow):
             self.show_notice('Đã có bản dịch cho tất cả ID. Nhấn “Lưu SRT” để xuất.')
             return
         self.auto_generation += 1
+        self.auto_recovery_counts = {}
+        self.auto_recovering = False
         self.auto_received = None
         size = 1 if self._missing()[0].number in self.auto_retries else self.batch_spin.value()
         self.auto_batch = self._missing()[:size]
@@ -757,6 +767,55 @@ class App(QMainWindow):
             datetime.fromtimestamp(self.service_wait_until).strftime('%H:%M') +
             f' — còn {remaining // 60} phút {remaining % 60} giây. Đã giữ tiến độ.')
 
+    def _try_recovery(self, stage, action, detail):
+        if (not self.auto_recover_checkbox.isChecked() or not self.auto_session or
+                time.monotonic() >= self.auto_hard_deadline):
+            return False
+        if self.auto_recovering:
+            return True
+        attempt = self.auto_recovery_counts.get(stage, 0)
+        if attempt >= 3:
+            return False
+        self.auto_recovery_counts[stage] = attempt + 1
+        self.auto_recovering = True
+        self._save_checkpoint()
+        self.log(f'🔄 Phục hồi {stage} {attempt+1}/3 sau 5 giây: {detail}')
+        self.web_status.setText(f'Đang giữ tiến độ và thử phục hồi {attempt+1}/3: {detail}')
+        generation = self.auto_generation
+        def recover():
+            if self.auto_session and self.auto_generation == generation:
+                self.auto_recovering = False
+                if not self.auto_recover_checkbox.isChecked() or time.monotonic() >= self.auto_hard_deadline:
+                    self._auto_failed('Đã dừng phục hồi hoặc hết giới hạn chờ. Bản dịch đã nhận được giữ nguyên.')
+                    return
+                action()
+        QTimer.singleShot(5000, recover)
+        return True
+
+    def _retry_editor_probe(self, prompt):
+        self.auto_editor_deadline = time.monotonic() + 30
+        self._run_batch_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
+
+    def _retry_response_read(self):
+        self.auto_deadline = time.monotonic() + 30
+        self._poll_batch_response()
+
+    def _retry_native_wait(self):
+        if self.auto_send_state != 'native_pending':
+            return
+        def resumed(result):
+            if isinstance(result, dict) and result.get('ok'):
+                self.auto_send_deadline = time.monotonic() + 30
+                self._schedule_native_ack()
+            else:
+                self._auto_failed('Không phục hồi được phiên gửi cũ của module. Không tự tạo yêu cầu gửi mới.')
+        self._run_batch_script(RESUME_NATIVE_WAIT_JS, resumed)
+
+    def _retry_builtin_wait(self):
+        if self.auto_send_state == 'waiting':
+            self.auto_send_deadline = time.monotonic() + 30
+            self._schedule_send()
+
     def _schedule_poll(self, delay=1200):
         generation = self.auto_generation
         def current():
@@ -768,10 +827,14 @@ class App(QMainWindow):
         if not self.auto_session:
             return
         if isinstance(result, dict) and result.get('scriptError'):
+            if self._try_recovery('ô chat', lambda: self._retry_editor_probe(prompt), 'Chưa đọc được trạng thái ô chat; chưa gửi lô.'):
+                return
             self._auto_failed('Không kiểm tra được ô chat: ' + str(result['scriptError']))
             return
         if not isinstance(result, dict) or not result.get('site') or not result.get('editor'):
             if time.monotonic() >= self.auto_editor_deadline:
+                if self._try_recovery('ô chat', lambda: self._retry_editor_probe(prompt), 'Chờ ô chat xuất hiện lại; chưa gửi lô.'):
+                    return
                 self._auto_failed('Hết thời gian chờ ô chat có thể nhập. Đăng nhập không bảo đảm giao diện đã sẵn sàng; kiểm tra trang đã tải xong, đóng hộp thoại trên Web hoặc xem thông báo của trang. Bản dịch đã lưu được giữ nguyên.')
                 return
             self._status('◌ Chưa thấy ô chat sẵn sàng', '#ab7700')
@@ -816,6 +879,8 @@ class App(QMainWindow):
         def confirm():
             if self.auto_session and self.auto_generation == generation and self.auto_send_state == 'native_pending':
                 if time.monotonic() >= self.auto_send_deadline:
+                    if self._try_recovery('gửi module', self._retry_native_wait, 'Kiểm tra yêu cầu đã gửi hoặc tiếp tục chờ nút gửi; không tạo lệnh gửi mới.'):
+                        return
                     self._auto_failed('Chưa xác nhận được thao tác gửi của module sau thời gian chờ. ' + self.auto_native_reason + ' Không tự gửi lại để tránh trùng; bản dịch đã lưu được giữ nguyên.')
                     return
                 self._run_batch_script(NATIVE_SEND_ACK_JS, self._on_native_ack)
@@ -862,6 +927,8 @@ class App(QMainWindow):
             if (self.auto_session and generation == self.auto_generation and
                     self.auto_send_state == 'waiting'):
                 if time.monotonic() >= self.auto_send_deadline:
+                    if self._try_recovery('nút gửi', self._retry_builtin_wait, 'Lô chưa được bấm gửi; tiếp tục chờ nút sẵn sàng.'):
+                        return
                     self._auto_failed('Đã chờ nút gửi nhưng chưa sẵn sàng: ' + self.auto_send_reason +
                                       ' Bản dịch đã nhận vẫn được lưu. Kiểm tra thông báo thực tế trên Web trước khi thử lại.')
                     return
@@ -894,6 +961,8 @@ class App(QMainWindow):
         if not self.auto_session or not self.batch_waiting_for_json or self.auto_poll_busy:
             return
         if time.monotonic() >= min(self.auto_deadline, self.auto_hard_deadline):
+            if self._try_recovery('phản hồi', self._retry_response_read, 'Chỉ đọc lại lô đang chờ, không gửi lại prompt.'):
+                return
             self._auto_failed(self.auto_last_error or f'Chưa nhận được JSON dịch mới hợp lệ cho lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}. Không dùng phản hồi cũ thay cho lô này. Bản dịch trước đó vẫn được lưu; kiểm tra phản hồi hoặc thông báo thực tế trên Web trước khi thử lại.')
             return
         self.auto_poll_busy = True
@@ -906,6 +975,8 @@ class App(QMainWindow):
         text = result.get('text', '') if isinstance(result, dict) else ''
         count = result.get('assistantCount', 0) if isinstance(result, dict) else 0
         if isinstance(result, dict) and result.get('scriptError'):
+            if self._try_recovery('phản hồi', self._retry_response_read, 'Web tạm thời chưa trả kết quả đọc; không gửi lại prompt.'):
+                return
             self._auto_failed('Không đọc được giao diện Web: ' + str(result['scriptError']))
             return
         generating = bool(result.get('generating')) if isinstance(result, dict) else True

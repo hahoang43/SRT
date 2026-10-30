@@ -410,6 +410,7 @@ button.onclick = () => {
 
     def make_session(self):
         window = App()
+        window.auto_recover_checkbox.setChecked(False)
         window.show_notice = lambda message: None
         window.model.load_cues(parse_srt(
             '1\n00:00:01,000 --> 00:00:02,000\n你好\n\n'
@@ -634,6 +635,67 @@ button.onclick = () => {
             self.assertEqual(scripts,[])
             self.assertEqual(window.model.cues[0].translation,'Xin chào')
             self.assertFalse(window.service_wait_timer.isActive())
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
+    def test_late_reply_recovers_without_sending_prompt_again(self):
+        window=self.make_session()
+        timers,scripts=[],[]
+        window.auto_recover_checkbox.setChecked(True)
+        window._run_web_script=lambda script,callback:scripts.append((script,callback))
+        try:
+            window._queue_next_auto_batch()
+            window.auto_baseline=0
+            window.auto_baseline_text=''
+            window.auto_send_state='sent'
+            window.auto_deadline=time.monotonic()-1
+            scripts.clear()
+            with patch('app.QTimer.singleShot',side_effect=lambda delay,fn:timers.append(fn)):
+                window._poll_batch_response()
+                self.assertTrue(window.auto_session)
+                self.assertEqual(scripts,[])
+                timers.pop()()
+            self.assertEqual(len(scripts),1)
+            self.assertNotIn('insertText',scripts[0][0])
+            payload=json.dumps({'items':[{'id':1,'vi':'Xin chào'},{'id':2,'vi':'Đừng lo\nTôi giúp bạn'}]})
+            scripts[0][1]({'site':True,'assistantCount':1,'text':payload,'lastText':payload,'generating':False})
+            self.assertEqual(window.model.cues[0].translation,'Xin chào')
+            self.assertEqual(window.model.cues[1].translation,'Đừng lo\nTôi giúp bạn')
+            self.assertTrue(window.next_batch_timer.isActive())
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
+    def test_recovery_budget_is_bounded_and_cancelled_by_stop(self):
+        window=self.make_session()
+        window.auto_recover_checkbox.setChecked(True)
+        timers,actions=[],[]
+        try:
+            window._queue_next_auto_batch()
+            with patch('app.QTimer.singleShot',side_effect=lambda delay,fn:timers.append(fn)):
+                for _ in range(3):
+                    self.assertTrue(window._try_recovery('test',lambda:actions.append(True),'test'))
+                    timers.pop()()
+                self.assertFalse(window._try_recovery('test',lambda:actions.append(True),'test'))
+                self.assertTrue(window._try_recovery('other',lambda:actions.append(False),'test'))
+                window.stop_translation()
+                timers.pop()()
+            self.assertEqual(actions,[True,True,True])
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
+    def test_hard_deadline_does_not_allow_more_recovery(self):
+        window=self.make_session()
+        window.auto_recover_checkbox.setChecked(True)
+        try:
+            window._queue_next_auto_batch()
+            window.auto_hard_deadline=time.monotonic()-1
+            self.assertFalse(window._try_recovery('test',lambda:None,'test'))
         finally:
             window.close()
             window.deleteLater()

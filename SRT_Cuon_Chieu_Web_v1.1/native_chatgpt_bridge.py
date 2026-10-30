@@ -148,9 +148,11 @@ class WebBridge:
                 }
                 state.reason=stop ? 'Trang vẫn đang tạo câu trả lời trước.' : 'Nút gửi của module chưa sẵn sàng.';
               }
-              window.setTimeout(check,500);
+              state.timer=window.setTimeout(check,500);
             };
-            return window.setTimeout(check,delay);
+            state.check=check;
+            state.timer=window.setTimeout(check,delay);
+            return state.timer;
           };
           const value = (NATIVE);
           return {ok:value === true, nativeQueued:true};
@@ -176,6 +178,25 @@ NATIVE_SEND_ACK_JS = builtin._guard_service_limit(r"""(() => {
     return {pending:true, why:state.reason};
   return {ok:false, why:'Nội dung ô chat đã thay đổi; không tự gửi lại để tránh trùng.'};
 })()""".replace('/*EDITOR_HELPER*/', builtin._EDITOR_HELPER).replace('/*POSTED_HELPER*/', _POSTED_PROMPT_HELPER))
+
+
+RESUME_NATIVE_WAIT_JS = builtin._guard_service_limit(r"""(() => {
+  if (!['chatgpt.com','www.chatgpt.com'].includes(location.hostname))
+    return {ok:false,why:'Trang đã rời ChatGPT.'};
+  /*POSTED_HELPER*/
+  const state=window.__srtNativeState;
+  if (!state || state.id!==window.__srtNativeSendId || state.failed)
+    return {ok:false,why:'Phiên gửi của module không còn hợp lệ.'};
+  if (state.invoked || postedPromptCount()>state.before) {
+    state.invoked=true;
+    return {ok:true,resumed:false};
+  }
+  if (typeof state.check!=='function') return {ok:false,why:'Không còn thao tác chờ nút gửi.'};
+  window.clearTimeout(state.timer);
+  state.until=Date.now()+30000;
+  state.check();
+  return {ok:true,resumed:true};
+})()""".replace('/*POSTED_HELPER*/', _POSTED_PROMPT_HELPER))
 
 
 def load_web_bridge():

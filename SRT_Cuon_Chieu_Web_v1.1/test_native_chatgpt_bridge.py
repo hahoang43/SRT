@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from native_chatgpt_bridge import WebBridge, load_web_bridge, NATIVE_FILE, NATIVE_SHA256
+from native_chatgpt_bridge import WebBridge, load_web_bridge, NATIVE_FILE, NATIVE_SHA256, RESUME_NATIVE_WAIT_JS
 
 
 class FakeHandler:
@@ -94,6 +94,39 @@ process.stdout.write(JSON.stringify({queued,received:window.received,clicks:wind
                 self.assertTrue(value['queued']['ok'])
                 self.assertEqual(value['received'],payload)
                 self.assertEqual(value['clicks'],0 if cancel else 1)
+
+    def test_resume_wait_does_not_invoke_native_send_twice(self):
+        if not shutil.which('node'):
+            self.skipTest('Node.js required')
+        class CaptureHandler(FakeHandler):
+            @staticmethod
+            def get_send_js(message):
+                return "(() => {const text=`"+message+"`;window.received=text;setTimeout(()=>window.clicks++,400);return true;})()"
+        script=WebBridge(CaptureHandler).send_js('batch',42)
+        fixture=r'''
+const tasks=[];
+global.window={clicks:0,setTimeout:callback=>{tasks.push(callback);return tasks.length;},clearTimeout:()=>{}};
+global.location={hostname:'chatgpt.com'};
+const editor={tagName:'TEXTAREA',matches:()=>true,getClientRects:()=>[1],closest:()=>null,
+  get value(){return window.received;}};
+const button={disabled:true,getClientRects:()=>[1],getAttribute:()=>null};
+global.getComputedStyle=()=>({visibility:'visible'});
+global.document={querySelectorAll:selector=>selector==='#prompt-textarea' ? [editor] : selector==='button#composer-submit-button' ? [button] : []};
+const queued=SEND;
+window.__srtNativeState.until=0;
+tasks.shift()();
+const before=window.clicks;
+button.disabled=false;
+const resumed=RESUME;
+const after=window.clicks;
+const again=RESUME;
+process.stdout.write(JSON.stringify({before,after,final:window.clicks,resumed,again}));
+'''
+        fixture=fixture.replace('SEND',script).replace('RESUME',RESUME_NATIVE_WAIT_JS)
+        value=json.loads(subprocess.run(['node','-e',fixture],capture_output=True,text=True,check=True).stdout)
+        self.assertEqual((value['before'],value['after'],value['final']),(0,1,1))
+        self.assertTrue(value['resumed']['resumed'])
+        self.assertFalse(value['again']['resumed'])
 
     def test_invalid_native_api_fails_explicitly(self):
         class BadHandler:

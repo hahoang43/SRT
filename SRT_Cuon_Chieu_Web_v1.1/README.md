@@ -151,3 +151,11 @@ Bộ đọc của module có thao tác tự cuộn đến câu trả lời mỗi
 Nút **Hiện ô chat** dừng phiên hiện tại, rồi cuộn/focus ô nhập nếu nó vẫn tồn tại. Nếu trang không còn editor, ứng dụng báo rõ và hướng dẫn nhấn **⟳**; không chèn ô nhập giả hoặc tự sửa giao diện ChatGPT. Tải lại Web cũng dừng phiên trước để hủy callback gửi cũ, giữ checkpoint và dùng lại hồ sơ trình duyệt. Sau khi ô chat đã hiện, bấm Bắt đầu để tiếp tục các ID còn thiếu.
 
 Khi chưa thấy editor, trạng thái kết nối chuyển sang chờ thay vì vẫn báo sẵn sàng. Không thể xác nhận nguyên nhân biến mất editor trên máy Windows chỉ từ ảnh; nếu ChatGPT không render ô nhập hoặc đang yêu cầu chờ/xác minh thì cần xử lý trạng thái thực tế của dịch vụ.
+
+### v1.4.0: Phục hồi lỗi Web tạm thời có giới hạn
+
+Tùy chọn **Tự phục hồi khi Web chậm** bật mặc định. Khi kiểm tra ô chat bị lỗi, editor tạm biến mất, nút gửi chưa bật hoặc phản hồi đến muộn, ứng dụng giữ checkpoint và thử phục hồi sau 5 giây, tối đa 3 lần cho mỗi giai đoạn của một lô. Có thể tắt tùy chọn để dừng ngay như trước.
+
+Phục hồi đọc phản hồi chỉ đọc lại lô đang chờ, không tạo prompt mới hay gửi lại yêu cầu. Với module native, chỉ tiếp tục callback chờ nút của chính yêu cầu hiện tại khi chưa bấm gửi; nếu đã bấm thì chỉ kiểm tra xác nhận. Bộ đếm callback bảo đảm không bấm lần hai. Dừng/đóng cửa sổ hoặc sang lô mới hủy các lần phục hồi còn chờ. Giới hạn chờ phản hồi tối đa 15 phút vẫn áp dụng; thông báo yêu cầu chờ của ChatGPT được xử lý riêng.
+
+Nhật ký ghi rõ giai đoạn và số lần phục hồi. Hết ngân sách thử lại, JSON vẫn sai hoặc dịch vụ yêu cầu hành động thủ công thì ứng dụng vẫn dừng và giữ tiến độ. Đây là tăng khả năng chịu lỗi tạm thời, không phải bảo đảm ChatGPT Web chạy không lỗi hoặc không giới hạn. Quy trình dài qua API có cấu trúc hoặc mô hình cục bộ có thể giảm phụ thuộc DOM; backend hiện tại vẫn dùng ChatGPT Web theo lựa chọn của người dùng.
