@@ -31,35 +31,7 @@ from srt_engine import (
     parse_srt, read_text, restore_progress, save_progress, srt_contents,
 )
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js, REVEAL_EDITOR_JS
-from native_chatgpt_bridge import load_web_bridge, NATIVE_SEND_ACK_JS, RESUME_NATIVE_WAIT_JS
 from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
-from zk_web_bridge import load_zk_support, merge_zk_response
-
-WEB_BRIDGE = load_web_bridge()
-ZK_SUPPORT = None
-
-
-def _get_zk_support():
-    global ZK_SUPPORT
-    if ZK_SUPPORT is None:
-        ZK_SUPPORT = load_zk_support(WEB_BRIDGE.native)
-    return ZK_SUPPORT
-PROBE_JS = WEB_BRIDGE.probe_js
-READ_LATEST_RESPONSE_JS = WEB_BRIDGE.read_js
-
-
-if WEB_AVAILABLE:
-    class SharedWebPage(QWebEnginePage):
-        """Only rewrite the known native reader, never scripts containing SRT data."""
-        def __init__(self, profile, parent, bridge):
-            super().__init__(profile, parent)
-            self._native_original = getattr(bridge, 'original_read_js', None)
-            self._native_sanitized = getattr(bridge, 'sanitized_read_js', None)
-
-        def runJavaScript(self, script, *args):
-            if self._native_original and script.strip().rstrip(';') == self._native_original:
-                script = self._native_sanitized
-            return super().runJavaScript(script, *args)
 
 
 class CueTableModel(QAbstractTableModel):
@@ -137,7 +109,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.5.0 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.6.0 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -178,9 +150,8 @@ class App(QMainWindow):
         self.service_wait_timer.timeout.connect(self._tick_service_wait)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.5.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
-        self.log(WEB_BRIDGE.status)
-        self.log(self.zk_status)
+        self.log('SRT WEB v1.6.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('Đang dùng bộ Web Python/PySide6 tích hợp của ứng dụng SRT.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -360,8 +331,7 @@ class App(QMainWindow):
         self.web_status.setWordWrap(True)
         web_layout.addWidget(self.web_status)
         if WEB_AVAILABLE:
-            self.web_view, self.zk_view_active, self.zk_status = _get_zk_support().create_view(self, QWebEngineView)
-            self.zk_reader_enabled = self.zk_view_active
+            self.web_view = QWebEngineView()
             # Reuse web cookies for manual browsing. Credentials never read by this app.
             from PySide6.QtCore import QStandardPaths
             data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
@@ -370,15 +340,12 @@ class App(QMainWindow):
             self.web_profile.setPersistentStoragePath(str(data_dir / 'chatgpt_profile'))
             self.web_profile.setCachePath(str(data_dir / 'chatgpt_cache'))
             self.web_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
-            self.web_page = SharedWebPage(self.web_profile, self.web_view, WEB_BRIDGE)
+            self.web_page = QWebEnginePage(self.web_profile, self.web_view)
             self.web_view.setPage(self.web_page)
             self.web_view.loadFinished.connect(self._web_loaded_callback)
             web_layout.addWidget(self.web_view, 1)
         else:
             self.web_view = None
-            self.zk_view_active = False
-            self.zk_reader_enabled = False
-            self.zk_status = 'Chưa có QtWebEngine nên chưa tạo khung ZK.'
             web_layout.addWidget(QLabel('Thiếu QtWebEngine. Không thể thực hiện phép thử nhắn tin trong ứng dụng.'))
             web_layout.addWidget(self._button('Mở ChatGPT trong trình duyệt', lambda: QDesktopServices.openUrl(QUrl('https://chatgpt.com/'))))
         self.web_panel.hide()
@@ -424,7 +391,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.5.0\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.6.0\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -759,7 +726,6 @@ class App(QMainWindow):
         self._run_web_script(script, current)
 
     def _wait_for_service(self, result):
-        self._cancel_native_pending()
         self._stop_reply_capture()
         retry_at = result.get('retryAt')
         if (type(retry_at) not in (int, float) or not 0 < retry_at - time.time() <= 86400):
@@ -828,16 +794,6 @@ class App(QMainWindow):
         self.auto_deadline = time.monotonic() + 30
         self._poll_batch_response()
 
-    def _retry_native_wait(self):
-        if self.auto_send_state != 'native_pending':
-            return
-        def resumed(result):
-            if isinstance(result, dict) and result.get('ok'):
-                self.auto_send_deadline = time.monotonic() + 30
-                self._schedule_native_ack()
-            else:
-                self._auto_failed('Không phục hồi được phiên gửi cũ của module. Không tự tạo yêu cầu gửi mới.')
-        self._run_batch_script(RESUME_NATIVE_WAIT_JS, resumed)
 
     def _retry_builtin_wait(self):
         if self.auto_send_state == 'waiting':
@@ -882,63 +838,13 @@ class App(QMainWindow):
         self.auto_dom_chars = None
         self.auto_last_response = ''
         self.auto_stable_reads = 0
-        if WEB_BRIDGE.native:
-            try:
-                script = with_reply_capture(WEB_BRIDGE.send_js(prompt, self.auto_generation), self.auto_batch, self.auto_generation)
-            except Exception as error:
-                self._auto_failed('Module ai_chatgpt không tạo được lệnh gửi: ' + str(error))
-                return
-            self.auto_native_reason = ''
-            self.auto_send_state = 'native_pending'
-            self.auto_send_deadline = time.monotonic() + min(30, self.timeout_spin.value())
-            self._run_batch_script(script, self._on_native_queued)
-        else:
-            self._run_batch_script(with_reply_capture(make_send_message_js(prompt), self.auto_batch, self.auto_generation), self._on_batch_prepared)
+        self._run_batch_script(with_reply_capture(make_send_message_js(prompt), self.auto_batch, self.auto_generation), self._on_batch_prepared)
 
-    def _on_native_queued(self, result):
-        if not isinstance(result, dict) or result.get('ok') is not True:
-            self._auto_failed('Module ai_chatgpt không điền/gửi được lô. Kiểm tra ô chat trên Web.')
-            return
-        self.log('Module ai_chatgpt đã chuẩn bị lô; chờ nút gửi và xác nhận yêu cầu trong hội thoại.')
-        self._schedule_native_ack()
-
-    def _schedule_native_ack(self):
-        generation = self.auto_generation
-        def confirm():
-            if self.auto_session and self.auto_generation == generation and self.auto_send_state == 'native_pending':
-                if time.monotonic() >= self.auto_send_deadline:
-                    if self._try_recovery('gửi module', self._retry_native_wait, 'Kiểm tra yêu cầu đã gửi hoặc tiếp tục chờ nút gửi; không tạo lệnh gửi mới.'):
-                        return
-                    self._auto_failed('Chưa xác nhận được thao tác gửi của module sau thời gian chờ. ' + self.auto_native_reason + ' Không tự gửi lại để tránh trùng; bản dịch đã lưu được giữ nguyên.')
-                    return
-                self._run_batch_script(NATIVE_SEND_ACK_JS, self._on_native_ack)
-        QTimer.singleShot(750, confirm)
-
-    def _on_native_ack(self, result):
-        if not self.auto_session or self.auto_send_state != 'native_pending':
-            return
-        if isinstance(result, dict) and result.get('pending'):
-            reason = result.get('why', 'Đang chờ module gửi.')
-            if reason != self.auto_native_reason:
-                self.log('◌ Module ai_chatgpt: ' + reason)
-            self.auto_native_reason = reason
-            self.web_status.setText(reason)
-            self._schedule_native_ack()
-        elif isinstance(result, dict) and result.get('ok'):
-            self.log('Module xác nhận gửi qua: ' + str(result.get('confirmed', 'ô chat')))
-            self.auto_send_state = 'checking'
-            self._on_batch_sent(result)
-        else:
-            reason = result.get('why', result.get('scriptError', 'Không xác nhận được thao tác gửi.')) if isinstance(result, dict) else 'Không đọc được trạng thái gửi.'
-            self._auto_failed(reason + ' Không tự gửi lại để tránh trùng.')
 
     def _stop_reply_capture(self):
         if self.web_view is not None:
             self.web_view.page().runJavaScript(STOP_CAPTURE_JS)
 
-    def _cancel_native_pending(self):
-        if WEB_BRIDGE.native and self.auto_send_state == 'native_pending' and self.web_view is not None:
-            self.web_view.page().runJavaScript('window.__srtNativeSendId = null;')
 
     def _on_batch_prepared(self, result):
         if not isinstance(result, dict) or not result.get('ok'):
@@ -994,48 +900,8 @@ class App(QMainWindow):
             self._auto_failed(self.auto_last_error or f'Chưa nhận được JSON dịch mới hợp lệ cho lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}. Không dùng phản hồi cũ thay cho lô này. Bản dịch trước đó vẫn được lưu; kiểm tra phản hồi hoặc thông báo thực tế trên Web trước khi thử lại.')
             return
         self.auto_poll_busy = True
-        self._run_batch_script(read_with_capture(READ_LATEST_RESPONSE_JS, self.auto_generation), self._read_zk_response)
+        self._run_batch_script(read_with_capture(READ_LATEST_RESPONSE_JS, self.auto_generation), self._on_batch_response)
 
-    def _read_zk_response(self, base):
-        if (not self.zk_reader_enabled or not isinstance(base, dict) or
-                base.get('scriptError') or base.get('site') is False or base.get('cooldown')):
-            self._on_batch_response(base)
-            return
-        fresh = (base.get('captured') or base.get('assistantCount', 0) > self.auto_baseline or
-                 base.get('lastText', '') != getattr(self, 'auto_baseline_text', ''))
-        if fresh:
-            try:
-                check_translations(self.auto_batch, extract_json(base.get('text', '')))
-            except (TypeError, ValueError):
-                pass
-            else:
-                self._on_batch_response(base)
-                return
-        generation = self.auto_generation
-        completed = False
-        def finish(*args, error=None):
-            nonlocal completed
-            if completed:
-                return
-            completed = True
-            if not self.auto_session or generation != self.auto_generation:
-                return
-            result = base
-            if error is None:
-                try:
-                    result = merge_zk_response(base, args, self.auto_batch)
-                except Exception as exc:
-                    error = str(exc)
-            if error is not None:
-                self.zk_reader_enabled = False
-                self.log('⚠ Bộ đọc ZK chưa tương thích: ' + str(error)[:240] + '. Tiếp tục bằng ai_chatgpt/SRT.')
-                result = {**base, 'diagnostics': {**base.get('diagnostics', {}), 'zkReader': False}}
-            self._on_batch_response(result)
-        QTimer.singleShot(5000, lambda: finish(error='ZK không trả callback trong 5 giây'))
-        try:
-            self.web_view.get_last_response(lambda *args: finish(*args))
-        except Exception as exc:
-            finish(error=exc)
 
     def _on_batch_response(self, result):
         self.auto_poll_busy = False
@@ -1199,7 +1065,6 @@ class App(QMainWindow):
 
     def stop_translation(self):
         self._stop_reply_capture()
-        self._cancel_native_pending()
         self.service_wait_timer.stop()
         self.auto_send_state = 'idle'
         self.auto_received = None
@@ -1220,7 +1085,6 @@ class App(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_reply_capture()
-        self._cancel_native_pending()
         self.service_wait_timer.stop()
         self.auto_generation += 1
         self.auto_session = False

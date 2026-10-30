@@ -232,40 +232,6 @@ class WebBridgeTests(unittest.TestCase):
     def test_generic_contenteditable_sends_two_batches(self):
         self._assert_two_batches('<div role="textbox" contenteditable="true"></div>')
 
-    def test_native_adapter_sends_two_batches_without_builtin_double_send(self):
-        from native_chatgpt_bridge import WebBridge
-        from test_native_chatgpt_bridge import FakeHandler
-        bridge = WebBridge(FakeHandler)
-        with patch('app.WEB_BRIDGE',bridge), patch('app.PROBE_JS',bridge.probe_js), patch('app.READ_LATEST_RESPONSE_JS',bridge.read_js):
-            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>')
-
-    def test_native_send_is_confirmed_when_request_is_posted_but_draft_remains(self):
-        from native_chatgpt_bridge import WebBridge
-        from test_native_chatgpt_bridge import FakeHandler
-        bridge = WebBridge(FakeHandler)
-        with patch('app.WEB_BRIDGE',bridge), patch('app.PROBE_JS',bridge.probe_js), patch('app.READ_LATEST_RESPONSE_JS',bridge.read_js):
-            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>', keep_draft=True)
-
-    def test_native_select_all_is_restricted_to_editable_child_not_whole_page(self):
-        from native_chatgpt_bridge import WebBridge
-        from test_native_chatgpt_bridge import FakeHandler
-        class GlobalSelectionHandler(FakeHandler):
-            @staticmethod
-            def get_send_js(message):
-                return r'''(() => {
-                  const text = `PAYLOAD`;
-                  const input = document.querySelector('#prompt-textarea') || document.querySelector('textarea');
-                  if (!input) return false;
-                  input.focus();
-                  document.execCommand('selectAll', false, null);
-                  document.execCommand('insertText', false, text);
-                  input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
-                  setTimeout(() => {const sendBtn = document.querySelector('#composer-submit-button');sendBtn.click();},400);
-                  return true;
-                })()'''.replace('PAYLOAD',message)
-        bridge=WebBridge(GlobalSelectionHandler)
-        with patch('app.WEB_BRIDGE',bridge),patch('app.PROBE_JS',bridge.probe_js),patch('app.READ_LATEST_RESPONSE_JS',bridge.read_js):
-            self._assert_two_batches('<div id="prompt-textarea"><div role="textbox" contenteditable="true"></div></div>')
 
     def test_reveal_and_reload_stop_pending_session_without_losing_progress(self):
         window=self.make_session()
@@ -289,122 +255,9 @@ class WebBridgeTests(unittest.TestCase):
             window.deleteLater()
             QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
 
-    def test_native_reader_does_not_scroll_the_page(self):
-        from native_chatgpt_bridge import WebBridge
-        from test_native_chatgpt_bridge import FakeHandler
-        class ScrollingHandler(FakeHandler):
-            @staticmethod
-            def get_read_js():
-                return r'''(() => {
-                  const targetNode=document.querySelector('main');
-                  targetNode.scrollIntoView({behavior:'instant',block:'end'});
-                  const box=targetNode;
-                  box.scrollTop=box.scrollHeight;
-                  return JSON.stringify({text:'{"items":[{"id":1,"vi":"Chào"}]}',
-                    is_generating:false,debug:String(window.scrollCalls)});
-                })()'''
-        window=App()
-        loop=QEventLoop()
-        values=[]
-        bridge=WebBridge(ScrollingHandler)
-        def received(value):
-            values.append(value)
-            loop.quit()
-        def loaded(ok):
-            if ok:
-                script="(() => {window.scrollCalls=0;Element.prototype.scrollIntoView=()=>window.scrollCalls++;return ("+bridge.read_js+");})()"
-                window._run_web_script(script.replace('location.hostname',"'chatgpt.com'"),received)
-            else:
-                loop.quit()
-        window.web_view.loadFinished.connect(loaded)
-        window.web_view.setHtml('<main><p>Chat</p></main>')
-        deadline=QTimer()
-        deadline.setSingleShot(True)
-        deadline.timeout.connect(loop.quit)
-        deadline.start(10000)
-        loop.exec()
-        deadline.stop()
-        try:
-            self.assertEqual(len(values),1)
-            self.assertTrue(values[0]['diagnostics']['nativeReader'])
-            self.assertEqual(values[0]['diagnostics']['nativeMethod'],'0')
-        finally:
-            window.close()
-            window.deleteLater()
-            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
 
-    def test_zk_view_ai_handler_and_srt_controller_share_one_page(self):
-        from types import SimpleNamespace
-        from PySide6.QtWebEngineWidgets import QWebEngineView
-        from native_chatgpt_bridge import WebBridge
-        from zk_web_bridge import ZKSupport
-        from test_native_chatgpt_bridge import FakeHandler
-        class ScrollingHandler(FakeHandler):
-            @staticmethod
-            def get_read_js():
-                return FakeHandler.get_read_js().replace('const replies =', "const targetNode=document.querySelector('main');targetNode.scrollIntoView({block:'end'});const replies =")
-        class ZKView(QWebEngineView):
-            calls = 0
-            profiles = []
-            scroll_calls = []
-            def get_last_response(self, callback):
-                type(self).calls += 1
-                type(self).profiles.append(self.page().profile().persistentStoragePath())
-                def collected(value):
-                    def checked(count):
-                        type(self).scroll_calls.append(count)
-                        callback(value)
-                    self.page().runJavaScript('window.scrollCalls', checked)
-                def prepared(_):
-                    self.page().runJavaScript(ScrollingHandler.get_read_js(), collected)
-                self.page().runJavaScript('window.scrollCalls=0;Element.prototype.scrollIntoView=()=>window.scrollCalls++;', prepared)
-            def send_prompt_safe(self, *args):
-                raise AssertionError('SRT must own the only sender')
-        module = SimpleNamespace(ChatGPTWebView=ZKView)
-        bridge = WebBridge(ScrollingHandler)
-        empty_reader="(() => ({site:true,text:'',lastText:'',assistantCount:0,generating:false}))()"
-        with patch('app.ZK_SUPPORT',ZKSupport(module)),patch('app.WEB_BRIDGE',bridge),patch('app.PROBE_JS',bridge.probe_js),patch('app.READ_LATEST_RESPONSE_JS',empty_reader),patch('app.read_with_capture',side_effect=lambda script,request_id:script):
-            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>')
-        self.assertGreater(ZKView.calls,0)
-        self.assertEqual(ZKView.scroll_calls,[0]*len(ZKView.scroll_calls))
-        self.assertTrue(all(Path(path).name=='chatgpt_profile' for path in ZKView.profiles))
-
-    def test_complete_native_response_is_not_delayed_by_zk_reader(self):
-        window=self.make_session()
-        window.zk_reader_enabled=True
-        results=[]
-        window._on_batch_response=results.append
-        try:
-            window._queue_next_auto_batch()
-            base={'site':True,'captured':True,'text':json.dumps({'items':[{'id':1,'vi':'Xin chào'},{'id':2,'vi':'Đừng lo\nTôi giúp bạn'}]})}
-            with patch.object(window.web_view,'get_last_response',create=True) as read:
-                window._read_zk_response(base)
-            read.assert_not_called()
-            self.assertEqual(results,[base])
-        finally:
-            window.close()
-            window.deleteLater()
-            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
-
-    def test_zk_timeout_falls_back_once_and_ignores_late_callback(self):
-        window=self.make_session()
-        timers, callbacks, results = [], [], []
-        window.zk_reader_enabled=True
-        window._on_batch_response=results.append
-        base={'site':True,'text':'base','generating':False}
-        try:
-            with patch.object(window.web_view,'get_last_response',side_effect=callbacks.append,create=True),patch('app.QTimer.singleShot',side_effect=lambda delay,fn:timers.append(fn)):
-                window._read_zk_response(base)
-            timers[0]()
-            self.assertFalse(window.zk_reader_enabled)
-            self.assertEqual(len(results),1)
-            callbacks[0]({'text':'late','is_generating':False})
-            self.assertEqual(len(results),1)
-            self.assertEqual(results[0]['text'],'base')
-        finally:
-            window.close()
-            window.deleteLater()
-            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+    def test_builtin_sender_handles_editor_inside_wrapper(self):
+        self._assert_two_batches('<div id="prompt-textarea"><div role="textbox" contenteditable="true"></div></div>')
 
     def _assert_two_batches(self, editor_markup, keep_draft=False):
         window = App()
