@@ -108,7 +108,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.2.3 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.2.4 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -137,12 +137,13 @@ class App(QMainWindow):
         self.auto_last_error = ''
         self.auto_diagnostic = None
         self.auto_send_state = 'idle'
+        self.auto_received = None
         self.next_batch_timer = QTimer(self)
         self.next_batch_timer.setSingleShot(True)
         self.next_batch_timer.timeout.connect(self._queue_next_auto_batch)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.2.3 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.2.4 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -377,7 +378,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.2.3\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.2.4\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -647,6 +648,7 @@ class App(QMainWindow):
             self.show_notice('Đã có bản dịch cho tất cả ID. Nhấn “Lưu SRT” để xuất.')
             return
         self.auto_generation += 1
+        self.auto_received = None
         size = 1 if self._missing()[0].number in self.auto_retries else self.batch_spin.value()
         self.auto_batch = self._missing()[:size]
         self.batch_waiting_for_json = True
@@ -768,6 +770,37 @@ class App(QMainWindow):
             if isinstance(result, dict) and result.get('diagnostics'):
                 self.log('Cấu trúc Web: ' + json.dumps(result['diagnostics'], ensure_ascii=False))
         changed = result.get('lastText', '') != self.auto_baseline_text if isinstance(result, dict) else False
+        if isinstance(result, dict) and result.get('site') is False:
+            self._auto_failed('Trang hiện tại không còn là ChatGPT. Bản dịch hợp lệ đã nhận vẫn được lưu; kiểm tra Web trước khi tiếp tục.')
+            return
+        # A guest page can remove a reply immediately after streaming. Validate
+        # and checkpoint a complete batch on its FIRST visible read. Never
+        # send the next batch until generation has finished.
+        if text and (count > self.auto_baseline or changed):
+            try:
+                received = check_translations(self.auto_batch, extract_json(text))
+            except (ValueError, TypeError):
+                received = None
+            if received is not None and received != self.auto_received:
+                self.auto_received = received
+                self.auto_deadline = time.monotonic() + self.timeout_spin.value()
+                self.apply_translations(received)
+                self.log(f'✓ Đã lưu {len(received)} ID hợp lệ ngay khi đọc được; chờ Web hoàn tất.')
+        if self.auto_received is not None:
+            if generating:
+                # Preserve the existing fallback for a stale streaming CSS
+                # class, while a visible Stop control always blocks sending.
+                if text == self.auto_last_response:
+                    self.auto_stable_reads += 1
+                else:
+                    self.auto_last_response = text
+                    self.auto_stable_reads = 1
+                if (not isinstance(result, dict) or result.get('stopVisible', True) or
+                        self.auto_stable_reads < 4):
+                    self._schedule_poll()
+                    return
+            self._accept_batch(self.auto_received)
+            return
         if (count <= self.auto_baseline and not changed) or not text:
             self.auto_last_response = ''
             self.auto_stable_reads = 0
@@ -815,6 +848,9 @@ class App(QMainWindow):
                 self.auto_retries[cue.number] = self.auto_retries.get(cue.number, 0) + 1
         if errors:
             self.log('⚠ ' + '; '.join(errors[:3]))
+        self._accept_batch(mapping, errors)
+
+    def _accept_batch(self, mapping, errors=()):
         for number in mapping:
             self.auto_retries.pop(number, None)
         self.apply_translations(mapping)
@@ -870,6 +906,7 @@ class App(QMainWindow):
 
     def stop_translation(self):
         self.auto_send_state = 'idle'
+        self.auto_received = None
         self.auto_generation += 1
         self.auto_poll_busy = False
         self.next_batch_timer.stop()

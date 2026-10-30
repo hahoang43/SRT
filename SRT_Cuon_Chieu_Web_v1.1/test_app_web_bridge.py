@@ -2,6 +2,8 @@
 import unittest
 import json
 import time
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QEventLoop, QTimer, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
@@ -358,6 +360,85 @@ button.onclick = () => {
             window.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
+    def test_reply_visible_once_is_checkpointed_before_dom_disappears(self):
+        window = self.make_session()
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                window.path = Path(folder) / 'source.srt'
+                window.source_content = 'test source'
+                window._queue_next_auto_batch()
+                window.auto_baseline = 0
+                window.auto_baseline_text = ''
+                text = json.dumps({'items':[{'id':1,'vi':'Xin chào'},
+                                             {'id':2,'vi':'Đừng lo\nTôi giúp bạn'}]})
+                window._on_batch_response({'site':True,'assistantCount':1,'text':text,
+                    'lastText':text,'generating':True,'stopVisible':True})
+                checkpoint = json.loads(window.path.with_suffix('.progress.json').read_text(encoding='utf-8'))
+                self.assertEqual(checkpoint['translations'], {'1':'Xin chào','2':'Đừng lo\nTôi giúp bạn'})
+                self.assertTrue(window.batch_waiting_for_json)
+                self.assertFalse(window.next_batch_timer.isActive())
+                # Exact shape of the user's log: 1 complete reply -> 0 replies.
+                window._on_batch_response({'site':True,'assistantCount':0,'text':'',
+                    'lastText':'','generating':False,'stopVisible':False})
+                self.assertFalse(window.batch_waiting_for_json)
+                self.assertTrue(window.next_batch_timer.isActive())
+                window.next_batch_timer.stop()
+                window._queue_next_auto_batch()
+                self.assertEqual([cue.number for cue in window.auto_batch], [3])
+                self.assertIsNone(window.auto_received)
+        finally:
+            window.path = None
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_invalid_transient_reply_is_never_cached(self):
+        cases = [
+            {'items':[{'id':1,'vi':'Chào'}]},  # missing ID 2
+            {'items':[{'id':1,'vi':'Chào'},{'id':2,'vi':'Gộp sai dòng'}]},
+            {'items':[{'id':1,'vi':'Chào'},{'id':1,'vi':'Trùng'}]},
+            {'items':[{'id':99,'vi':'Sai lô'}]},
+        ]
+        for data in cases:
+            with self.subTest(data=data):
+                window = self.make_session()
+                try:
+                    window._queue_next_auto_batch()
+                    window.auto_baseline = 0
+                    window.auto_baseline_text = ''
+                    text = json.dumps(data)
+                    window._on_batch_response({'site':True,'assistantCount':1,'text':text,
+                        'lastText':text,'generating':True,'stopVisible':True})
+                    window._on_batch_response({'site':True,'assistantCount':0,'text':'',
+                        'lastText':'','generating':False,'stopVisible':False})
+                    self.assertIsNone(window.auto_received)
+                    self.assertEqual([c.translation for c in window.model.cues], ['', '', ''])
+                    self.assertTrue(window.batch_waiting_for_json)
+                    self.assertFalse(window.next_batch_timer.isActive())
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_stop_preserves_early_checkpoint_and_drops_pending_batch(self):
+        window = self.make_session()
+        try:
+            window.batch_spin.setValue(1)
+            window._queue_next_auto_batch()
+            window.auto_baseline = 0
+            window.auto_baseline_text = ''
+            text = '{"items":[{"id":1,"vi":"Xin chào"}]}'
+            window._on_batch_response({'site':True,'assistantCount':1,'text':text,
+                'lastText':text,'generating':True,'stopVisible':True})
+            window.stop_translation()
+            self.assertEqual(window.model.cues[0].translation, 'Xin chào')
+            self.assertIsNone(window.auto_received)
+            self.assertFalse(window.next_batch_timer.isActive())
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
     def test_send_waits_when_disabled_and_success_is_processed_once(self):
         window = self.make_session()
         scheduled, polls = [], []
@@ -458,7 +539,8 @@ button.onclick = () => {
                       'lastText':'new', 'generating':True, 'stopVisible':False}
             for _ in range(3):
                 window._on_batch_response(result)
-                self.assertEqual(window.model.cues[0].translation, '')
+                self.assertEqual(window.model.cues[0].translation, 'Xin chào')
+                self.assertFalse(window.next_batch_timer.isActive())
             window._on_batch_response(result)
             self.assertEqual(window.model.cues[0].translation, 'Xin chào')
             self.assertTrue(window.next_batch_timer.isActive())
@@ -478,7 +560,7 @@ button.onclick = () => {
                       'lastText':'new', 'generating':True, 'stopVisible':True}
             for _ in range(5):
                 window._on_batch_response(result)
-            self.assertEqual(window.model.cues[0].translation, '')
+            self.assertEqual(window.model.cues[0].translation, 'Xin chào')
             self.assertFalse(window.next_batch_timer.isActive())
         finally:
             window.close()

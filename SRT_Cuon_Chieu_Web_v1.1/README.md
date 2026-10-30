@@ -93,3 +93,11 @@ Dòng “Cấu trúc Web” trong nhật ký cho biết số role/turn, số ký
 Trước đây ứng dụng chỉ kiểm tra nút gửi một lần, 350 ms sau khi điền prompt. Bản này chờ nút gửi tối đa 30 giây (hoặc thời gian chờ Web nếu thấp hơn), kiểm tra lại mỗi 500 ms và chỉ bấm một lần khi nút được bật. Không điền lại prompt hoặc gửi lại khi đã bấm gửi. Thay đổi nội dung ô chat sẽ dừng để tránh gửi nhầm; nút submit ngoài form soạn chat không được dùng thay nút gửi.
 
 Nhật ký phân biệt “nút bị vô hiệu hóa”, “chưa tìm thấy nút” và “đang tạo câu trả lời trước”, không tự kết luận là thiếu đăng nhập. Hết thời gian chờ thì dừng, giữ checkpoint. Sau cập nhật, mở lại cùng file SRT để phục hồi tiến độ rồi bắt đầu dịch phần còn thiếu. Thời gian chờ nút gửi này độc lập với thời gian nghỉ giữa các lô và không bỏ qua giới hạn của ChatGPT.
+
+### v1.2.4: Giữ phản hồi hợp lệ trước khi giao diện thay đổi
+
+Nhật ký thực tế có trường hợp JSON chỉ xuất hiện trong một lần đọc khi Web còn đang tạo, rồi biến mất ở lần đọc kế tiếp. Trước đây ứng dụng chờ phản hồi ổn định/hết streaming mới kiểm tra nên có thể mất phản hồi này.
+
+Bản này kiểm tra JSON ngay khi nhìn thấy: phải đủ đúng ID của toàn bộ lô, không trùng/thừa ID, đúng kiểu dữ liệu và số dòng từng cue. Khi đạt, ứng dụng điền bảng và ghi checkpoint ngay, nhưng chưa gửi lô sau cho đến khi Web hết tạo câu trả lời. Nếu DOM mất phản hồi sau đó, tiếp tục bằng bản dịch hợp lệ đã giữ. Nút Stop đang hiển thị vẫn ngăn gửi lô mới. Dừng phiên giữ bản dịch đã lưu và xóa dữ liệu lô chờ để không dùng nhầm cho lần chạy sau.
+
+Không khôi phục từ JSON cắt dở, thiếu ID hoặc sai số dòng. Bản sửa không bảo đảm ChatGPT luôn trả lời và không thay đổi giới hạn/đăng nhập của dịch vụ. Kiểm thử tái hiện chuỗi một phản hồi đang tạo → không còn phản hồi, xác minh file checkpoint và việc tiếp tục đúng các ID chưa dịch.
