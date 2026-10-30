@@ -25,6 +25,23 @@ def _substitute(template, **values):
     return re.sub(r'\b(?:' + '|'.join(values) + r')\b', lambda match: values[match.group()], template)
 
 
+_POSTED_PROMPT_HELPER = r"""
+  const postedPromptCount = () => {
+    const compact=text=>(text || '').replace(/\s/g,'');
+    const prompt=compact(window.__srtOutboundPrompt);
+    if (!prompt) return 0;
+    let count=0;
+    for (const root of document.querySelectorAll('main, [role="main"], #thread, #conversation')) {
+      const copy=root.cloneNode(true);
+      copy.querySelectorAll('form, textarea, [contenteditable], script, style').forEach(el=>el.remove());
+      const text=compact((copy.textContent || '').slice(-500000));
+      count=Math.max(count,text.split(prompt).length-1);
+    }
+    return count;
+  };
+"""
+
+
 class WebBridge:
     def __init__(self, handler=None, status='Bộ Web tích hợp.'):
         self.native = handler is not None
@@ -80,6 +97,8 @@ class WebBridge:
         if replaced != 1:
             raise ValueError('Định dạng get_send_js không khớp module đã kiểm tra.')
         native = native.replace('input.innerHTML = `<p>${text}</p>`;', 'input.textContent = text;')
+        native = re.sub(r'\bconst\s+sendBtn\s*=\s*document\.querySelector[\s\S]*?;',
+                        'const sendBtn = window.__srtNativeReadyButton;', native, count=1)
         native = re.sub(r'(?<![\w.])(?:window\.)?setTimeout\s*\(', 'window.__srtNativeTimeout(', native)
         # The module schedules its own click after 400ms. Never follow it with
         # the built-in send script: that would send twice or submit a new draft.
@@ -88,14 +107,43 @@ class WebBridge:
             return {ok:false, why:'Trang hiện tại không phải ChatGPT.'};
           window.__srtOutboundPrompt = MESSAGE;
           const requestId = REQUEST_ID;
+          HELPERS
           window.__srtNativeSendId = requestId;
-          window.__srtNativeTimeout = (callback, delay) => window.setTimeout(() => {
-            if (window.__srtNativeSendId === requestId) callback();
-          }, delay);
+          const state={id:requestId,invoked:false,reason:'Chờ nút gửi sẵn sàng.',before:postedPromptCount(),until:Date.now()+30000};
+          window.__srtNativeState=state;
+          window.__srtNativeTimeout = (callback, delay) => {
+            const check = () => {
+              if (window.__srtNativeSendId!==requestId || state.invoked) return;
+              if (Date.now()>=state.until) {state.reason='Hết thời gian chờ nút gửi của module.';return;}
+              if (postedPromptCount()>state.before) {state.invoked=true;state.reason='Đã thấy yêu cầu mới trong hội thoại.';return;}
+              const editor=findChatEditor();
+              if (!editor) state.reason='Chưa thấy ô chat sau khi chuẩn bị lô.';
+              else {
+                const draft=editor.tagName.toLowerCase()==='textarea' ? editor.value : editor.innerText;
+                if (normalizeDraft(draft)!==normalizeDraft(window.__srtOutboundPrompt)) {
+                  state.reason='Nội dung ô chat đã thay đổi; không tự bấm gửi.';
+                  return;
+                }
+                const stop=[...document.querySelectorAll('[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Dừng"]')]
+                  .some(el=>el.getClientRects().length && getComputedStyle(el).visibility!=='hidden');
+                const button=findChatSendButton(editor);
+                if (button && !stop) {
+                  state.invoked=true;
+                  state.reason='Đã bấm gửi; chờ xác nhận yêu cầu.';
+                  window.__srtNativeReadyButton=button;
+                  try {callback();} catch (error) {state.failed=true;state.reason='Lỗi thao tác gửi của module: '+String(error);}
+                  return;
+                }
+                state.reason=stop ? 'Trang vẫn đang tạo câu trả lời trước.' : 'Nút gửi của module chưa sẵn sàng.';
+              }
+              window.setTimeout(check,500);
+            };
+            return window.setTimeout(check,delay);
+          };
           const value = (NATIVE);
           return {ok:value === true, nativeQueued:true};
         })()"""
-        script = _substitute(script, NATIVE=native, MESSAGE=json.dumps(message, ensure_ascii=False), REQUEST_ID=str(int(request_id)))
+        script = _substitute(script, NATIVE=native, MESSAGE=json.dumps(message, ensure_ascii=False), REQUEST_ID=str(int(request_id)), HELPERS=builtin._EDITOR_HELPER+builtin._SEND_CONTROL_HELPER+_POSTED_PROMPT_HELPER)
         return builtin._guard_service_limit(script)
 
 
@@ -103,14 +151,19 @@ NATIVE_SEND_ACK_JS = builtin._guard_service_limit(r"""(() => {
   if (!['chatgpt.com','www.chatgpt.com'].includes(location.hostname))
     return {ok:false, why:'Trang đã rời ChatGPT.'};
   /*EDITOR_HELPER*/
+  /*POSTED_HELPER*/
+  const state=window.__srtNativeState;
+  if (!state || state.id!==window.__srtNativeSendId) return {ok:false,why:'Phiên gửi của module không còn hiệu lực.'};
+  if (state.failed) return {ok:false,why:state.reason};
+  if (postedPromptCount()>state.before) {state.invoked=true;return {ok:true,confirmed:'conversation'};}
   const editor = findChatEditor();
   if (!editor) return {pending:true, why:'Chờ ô chat sau thao tác gửi của module.'};
   const draft = editor.tagName.toLowerCase() === 'textarea' ? editor.value : editor.innerText;
-  if (!normalizeDraft(draft)) return {ok:true};
+  if (!normalizeDraft(draft) && state.invoked) return {ok:true,confirmed:'composer'};
   if (normalizeDraft(draft) === normalizeDraft(window.__srtOutboundPrompt))
-    return {pending:true, why:'Module chưa gửi xong; nội dung lô vẫn còn trong ô chat.'};
+    return {pending:true, why:state.reason};
   return {ok:false, why:'Nội dung ô chat đã thay đổi; không tự gửi lại để tránh trùng.'};
-})()""".replace('/*EDITOR_HELPER*/', builtin._EDITOR_HELPER))
+})()""".replace('/*EDITOR_HELPER*/', builtin._EDITOR_HELPER).replace('/*POSTED_HELPER*/', _POSTED_PROMPT_HELPER))
 
 
 def load_web_bridge():

@@ -58,6 +58,18 @@ _EDITOR_HELPER = r"""
   };
 """
 
+_SEND_CONTROL_HELPER = r"""
+  const findChatSendButton = editor => {
+    const visible = el => el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+    const selectors = ['button#composer-submit-button','button[data-testid="send-button"]',
+      'button[aria-label="Send message"]','button[aria-label="Send prompt"]','button[aria-label="Gửi tin nhắn"]'];
+    const controls = selectors.flatMap(selector => [...document.querySelectorAll(selector)]);
+    const form = editor && editor.closest('form');
+    if (form) controls.push(...form.querySelectorAll('button[type="submit"]'));
+    return controls.find(el => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true') || null;
+  };
+"""
+
 # Both probes use the same canonical assistant nodes in document order.
 _DOM_HELPERS = r"""
   const shown = el => !!el && !!el.getClientRects().length &&

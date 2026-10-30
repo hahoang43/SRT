@@ -237,9 +237,16 @@ class WebBridgeTests(unittest.TestCase):
         from test_native_chatgpt_bridge import FakeHandler
         bridge = WebBridge(FakeHandler)
         with patch('app.WEB_BRIDGE',bridge), patch('app.PROBE_JS',bridge.probe_js), patch('app.READ_LATEST_RESPONSE_JS',bridge.read_js):
-            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>', native=True)
+            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>')
 
-    def _assert_two_batches(self, editor_markup, native=False):
+    def test_native_send_is_confirmed_when_request_is_posted_but_draft_remains(self):
+        from native_chatgpt_bridge import WebBridge
+        from test_native_chatgpt_bridge import FakeHandler
+        bridge = WebBridge(FakeHandler)
+        with patch('app.WEB_BRIDGE',bridge), patch('app.PROBE_JS',bridge.probe_js), patch('app.READ_LATEST_RESPONSE_JS',bridge.read_js):
+            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>', keep_draft=True)
+
+    def _assert_two_batches(self, editor_markup, keep_draft=False):
         window = App()
         loop = QEventLoop()
         notices = []
@@ -269,19 +276,25 @@ class WebBridgeTests(unittest.TestCase):
 let sent = 0;
 const editor = document.querySelector('textarea, [contenteditable]');
 const button = document.querySelector('button');
-editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, NATIVE_READY ? 100 : (sent === 0 ? 1200 : 2200)));
+editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, sent === 0 ? 1200 : 2200));
 button.onclick = () => {
   sent++;
+  const user=document.createElement('section');
+  user.dataset.turn='user';
+  user.textContent=editor.tagName==='TEXTAREA' ? editor.value : editor.innerText;
+  document.querySelector('main').appendChild(user);
   const turn = document.createElement('article');
   // Guest layout deliberately omits all role, turn and markdown selectors.
   const content = document.createElement('div');
   content.className = 'guest-reply';
   content.textContent = JSON.stringify({items:[{id:sent, vi:sent === 1 ? 'Xin chào' : 'Tạm biệt'}]});
   turn.appendChild(content); document.querySelector('main').appendChild(turn);
-  if (editor.tagName === 'TEXTAREA') editor.value = ''; else editor.textContent = '';
+  if (!KEEP_DRAFT) {
+    if (editor.tagName === 'TEXTAREA') editor.value = ''; else editor.textContent = '';
+  }
   button.disabled = true;
 };
-</script>'''.replace('NATIVE_READY', 'true' if native else 'false')
+</script>'''.replace('KEEP_DRAFT', 'true' if keep_draft else 'false')
         def loaded(ok):
             if ok:
                 window.web_panel.show()  # Prevent start_translation from loading a remote page.

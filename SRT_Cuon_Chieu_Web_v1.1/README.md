@@ -135,3 +135,11 @@ Ngoài việc đọc định kỳ qua module `.pyd`, ứng dụng cài bộ theo
 Trong dòng “Cấu trúc Web”, `captureInstalled` cho biết bộ theo dõi còn tồn tại trong trang, `capturedReplies` cho biết số bản JSON hợp lệ đã bắt được cho lô này. Dừng/đóng ứng dụng, kết thúc lô hoặc chờ giới hạn sẽ ngắt bộ theo dõi; ID phiên ngăn dùng nhầm dữ liệu lô trước. Thông báo hết thời gian chờ chỉ rõ chưa nhận JSON mới hợp lệ, thay vì kết luận module chưa được nạp hoặc chưa đăng nhập.
 
 Kiểm thử bổ sung: `python -B -m unittest -v test_response_capture` dùng QtWebEngine thật với JSON xuất hiện rồi bị xóa trước lần đọc. Cơ chế này không thể khôi phục nội dung chưa từng có JSON đầy đủ trong DOM, nội dung mất trước khi bộ theo dõi được gọi, hoặc phản hồi mất do tải lại cả trang trước lần đọc tiếp theo. Không tự gửi lại yêu cầu để tránh dịch trùng hay gửi thêm khi dịch vụ yêu cầu chờ.
+
+### v1.3.2: Chờ nút gửi cho module ai_chatgpt
+
+Lớp tích hợp trước đây cho module gọi thao tác gửi sau 400 ms, nhưng nếu nút chưa sẵn sàng tại thời điểm đó thì chỉ chờ xác nhận đến hết 30 giây. Bản này giữ nguyên file `.pyd`, chuẩn bị lô một lần và chờ nút gửi thực sự được bật trước khi gọi callback gửi của module. Kiểm tra mỗi 500 ms, giới hạn tối đa 30 giây; không dùng nút submit ngoài form soạn chat và không gọi lại hàm gửi sau khi đã bấm.
+
+Việc xác nhận dùng cả ô nhập đã xóa sau thao tác và số lần xuất hiện của chính prompt mới trong vùng hội thoại (loại trừ nội dung ô soạn thảo). Vì vậy prompt còn trong ô nhập không tự động bị coi là chưa gửi nếu đã thấy yêu cầu mới được đăng. Phản hồi/yêu cầu cũ có sẵn trước thao tác không được tính làm xác nhận. Dừng, đóng hoặc bắt đầu chờ giới hạn sẽ hủy callback còn chờ. Nhật ký ghi lý do chờ và cách xác nhận để phân biệt nút chưa bật với đã bấm nhưng chưa được trang tiếp nhận.
+
+Kiểm thử dùng giao thức module giả lập trên QtWebEngine: nút chỉ bật sau 1,2–2,2 giây và trường hợp yêu cầu đã được đăng nhưng draft chưa xóa. Chưa xác minh trực tiếp với binary trong phiên Windows của người dùng. Nếu trang luôn vô hiệu hóa nút gửi hoặc không nhận yêu cầu, ứng dụng vẫn dừng và giữ tiến độ; bản sửa không bỏ qua yêu cầu chờ của dịch vụ.

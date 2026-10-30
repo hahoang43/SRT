@@ -29,7 +29,7 @@ class FakeHandler:
           if (!input) return false;
           if (input.tagName === 'TEXTAREA') input.value = text; else input.innerText = text;
           input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
-          setTimeout(() => {document.querySelector('#composer-submit-button').click();},400);
+          setTimeout(() => {const sendBtn = document.querySelector('#composer-submit-button'); sendBtn.click();},400);
           return true;
         })();""".replace('PAYLOAD',message)
 
@@ -78,7 +78,12 @@ class NativeBridgeTests(unittest.TestCase):
 const tasks=[];
 global.window={clicks:0,setTimeout:callback=>tasks.push(callback)};
 global.location={hostname:'chatgpt.com'};
-global.document={};
+const editor={tagName:'TEXTAREA',matches:()=>true,getClientRects:()=>[1],closest:()=>null,
+  get value(){return window.received;}};
+const button={getClientRects:()=>[1],getAttribute:()=>null};
+global.getComputedStyle=()=>({visibility:'visible'});
+global.document={querySelectorAll:selector=>selector==='#prompt-textarea' ? [editor] :
+  selector==='button#composer-submit-button' ? [button] : []};
 const queued = SCRIPT;
 if (CANCEL) window.__srtNativeSendId=null;
 tasks.forEach(callback=>callback());
