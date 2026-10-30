@@ -118,7 +118,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self, backend=None):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT v1.9.1 — ChatGPT Web | Gemini Web & API')
+        self.setWindowTitle('DỊCH SRT v1.9.2 — ChatGPT Web | Gemini Web & API')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -171,7 +171,7 @@ class App(QMainWindow):
         self._build_ui()
         self._style()
         self._on_backend_changed()
-        self.log('SRT v1.9.1 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT v1.9.2 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -200,6 +200,10 @@ class App(QMainWindow):
         self.connection_label = QLabel('● Chưa kiểm tra ChatGPT Web')
         self.connection_label.setObjectName('status')
         top.addWidget(self.connection_label)
+        self.chatgpt_btn = self._button('🌐 ChatGPT Web', lambda: self.open_web_backend('web'), 'teal')
+        self.gemini_web_btn = self._button('✨ Gemini Web', lambda: self.open_web_backend('gemini_web'), 'gold')
+        top.addWidget(self.chatgpt_btn)
+        top.addWidget(self.gemini_web_btn)
         self.connect_btn = self._button('⚡ Mở ChatGPT Web', self.connect_and_open, 'teal')
         top.addWidget(self.connect_btn)
         self.web_btn = self._button('🌐 Hiện Web', self.toggle_web, 'gold')
@@ -458,7 +462,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT v1.9.1\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT v1.9.2\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -645,6 +649,7 @@ class App(QMainWindow):
         self.log(f'Đang tải trang {self._web_name()} (đăng nhập trực tiếp trên Web nếu được yêu cầu).')
 
     def _on_backend_changed(self):
+        was_showing_web = not self.web_panel.isHidden()
         if self.auto_session:
             self.stop_translation()
         self._stop_reply_capture()
@@ -686,9 +691,17 @@ class App(QMainWindow):
             self.web_status.setText(f'Đăng nhập Google trên Gemini rồi kiểm tra ô chat.' if self._uses_gemini_web()
                                     else 'Nhấn Mở ChatGPT Web để kiểm tra ô chat sẵn sàng.')
             self.log(f'Bộ dịch: {name} Web. Hạn mức của {name} vẫn áp dụng.')
-            if self._uses_gemini_web():
+            if was_showing_web or self._web_loaded or self._uses_gemini_web():
                 self.toggle_web()
         self._update_gemini_controls()
+
+    def open_web_backend(self, provider):
+        """Keep both Web providers directly accessible, even from API mode."""
+        if self.auto_session or self.gemini.busy:
+            self.show_notice('Hãy dừng phiên đang chạy trước khi chuyển bộ dịch.')
+            return
+        self.backend_box.setCurrentIndex(self.backend_box.findData(provider))
+        self.connect_and_open()
 
     def _ensure_web_bridge(self):
         global WEB_BRIDGE, PROBE_JS, READ_LATEST_RESPONSE_JS, _native_checked
@@ -704,6 +717,8 @@ class App(QMainWindow):
     def _update_gemini_controls(self):
         available = not self.gemini.busy and not self.auto_session
         self.backend_box.setEnabled(available)
+        self.chatgpt_btn.setEnabled(available)
+        self.gemini_web_btn.setEnabled(available)
         self.gemini_key.setEnabled(available)
         self.gemini_model.setEnabled(available)
         self.gemini_test_btn.setEnabled(available)
@@ -781,7 +796,7 @@ class App(QMainWindow):
             self.show_notice('Máy thiếu QtWebEngine: không thể kiểm tra kết nối trong khung Web. '
                              'Hãy chạy run_windows.bat để cài đúng thư viện.')
             return
-        if not self.web_panel.isVisible():
+        if self.web_panel.isHidden():
             self.toggle_web()
         self._connection_state = 'looking_for_editor'
         self._connection_deadline = time.monotonic() + self.timeout_spin.value()
@@ -869,7 +884,7 @@ class App(QMainWindow):
                          'Lưu ý: đây là kiểm tra giao diện Web, không phải kết nối API dịch tự động.')
 
     def toggle_web(self):
-        showing = not self.web_panel.isVisible()
+        showing = self.web_panel.isHidden()
         self.web_panel.setVisible(showing)
         self.web_btn.setText('🙈 Ẩn Web' if showing else '🌐 Hiện Web')
         if showing:
@@ -960,7 +975,7 @@ class App(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.open_btn.setEnabled(False)
         self._update_gemini_controls()
-        if not self._uses_gemini() and not self.web_panel.isVisible():
+        if not self._uses_gemini() and self.web_panel.isHidden():
             self.toggle_web()
         engine = 'Gemini API ' + self.auto_api_model if self._uses_gemini() else self._web_name() + ' Web'
         self.log(f'Bắt đầu dịch bằng {engine}: mỗi lô {self.batch_spin.value()} dòng.')

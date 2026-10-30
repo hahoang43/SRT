@@ -75,7 +75,8 @@ class GeminiWebTests(unittest.TestCase):
         gemini_view = window.web_view
         gemini_profile = window.web_profile
         self.assertIn('gemini_profile', gemini_profile.persistentStoragePath())
-        window.backend_box.setCurrentIndex(window.backend_box.findData('web'))
+        with patch.object(App, '_load_active_web'):
+            window.backend_box.setCurrentIndex(window.backend_box.findData('web'))
         self.assertIsNot(window.web_view, gemini_view)
         self.assertIn('chatgpt_profile', window.web_profile.persistentStoragePath())
         self.assertNotEqual(window.web_profile.persistentStoragePath(), gemini_profile.persistentStoragePath())
@@ -83,6 +84,47 @@ class GeminiWebTests(unittest.TestCase):
             window.backend_box.setCurrentIndex(window.backend_box.findData('gemini_web'))
         self.assertIs(window.web_view, gemini_view)
         self.assertIs(window.web_profile, gemini_profile)
+
+    def test_switching_back_restores_visible_chatgpt_and_existing_page(self):
+        with patch.object(App, '_load_active_web') as load:
+            window = App(backend='web')
+            self.addCleanup(self.close_window, window)
+            window.show()
+            window.toggle_web()
+            self.html(window, '<textarea id="prompt-textarea">Bản nháp ChatGPT</textarea>')
+            window._loaded_providers.add('web')
+            chatgpt_view, chatgpt_profile = window.web_view, window.web_profile
+            window.backend_box.setCurrentIndex(window.backend_box.findData('gemini_web'))
+            self.assertTrue(window.web_panel.isVisible())
+            load.reset_mock()
+            window.backend_box.setCurrentIndex(window.backend_box.findData('web'))
+            self.assertTrue(window.web_panel.isVisible())
+            self.assertIs(window.web_view, chatgpt_view)
+            self.assertIs(window.web_profile, chatgpt_profile)
+            self.assertIs(window.web_stack.currentWidget(), chatgpt_view)
+            self.assertIn('CHATGPT', window.web_heading.text())
+            self.assertEqual(self.js(window, 'document.querySelector("textarea").value'), 'Bản nháp ChatGPT')
+            load.assert_not_called()
+
+    def test_dedicated_chatgpt_button_remains_available_in_every_backend(self):
+        with patch.object(App, '_load_active_web'):
+            window = App(backend='gemini')
+            self.addCleanup(self.close_window, window)
+            window.show()
+            for backend in ('gemini', 'gemini_web', 'web'):
+                with self.subTest(backend=backend):
+                    window.backend_box.setCurrentIndex(window.backend_box.findData(backend))
+                    self.assertTrue(window.chatgpt_btn.isVisible())
+                    self.assertTrue(window.gemini_web_btn.isVisible())
+                    self.assertIn('ChatGPT', window.chatgpt_btn.text())
+                    with patch.object(window, 'connect_and_open') as connect:
+                        window.chatgpt_btn.click()
+                        self.assertEqual(window.backend_box.currentData(), 'web')
+                        connect.assert_called_once()
+            with patch.object(window, 'connect_and_open') as connect:
+                window.gemini_web_btn.click()
+                self.assertEqual(window.backend_box.currentData(), 'gemini_web')
+                connect.assert_called_once()
 
     def test_probe_is_read_only_and_does_not_accept_login_form(self):
         window = self.window()

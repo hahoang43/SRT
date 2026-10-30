@@ -1,13 +1,15 @@
-# SRT Cuốn Chiếu v1.9.1
+# SRT Cuốn Chiếu v1.9.2
 
 Ứng dụng Python/PySide6 dịch phụ đề Trung → Việt, giữ ID và mốc thời gian. **ChatGPT Web là bộ dịch mặc định**; có thể chọn **Gemini Web** để đăng nhập Google và dịch trong khung web, hoặc **Gemini API** với key Google AI Studio. Bản này đã bỏ Ollama; thiết lập bộ dịch Ollama cũ tự chuyển về ChatGPT Web, không xóa cookie hay checkpoint.
+
+Hai nút **ChatGPT Web** và **Gemini Web** luôn hiện phía trên, kể cả khi đang chọn Gemini API. Bấm nút tương ứng để mở và kiểm tra Web. Chuyển về ChatGPT hiện lại đúng trang và hồ sơ đã mở, giữ cookie và bản nháp.
 
 ## Cài và chạy trên Windows
 
 1. Cài Python 3.12, bản 64-bit, cho launcher hiện có và chế độ Web tùy chọn.
 2. Cập nhật repository bằng git pull origin main.
 3. Chạy run_windows.bat để cài PySide6 và mở app.
-4. Tiêu đề phải hiện v1.9.1. Mục “Chọn bộ dịch” mặc định là ChatGPT Web; app nhớ lựa chọn cho lần sau.
+4. Tiêu đề phải hiện v1.9.2. Mục “Chọn bộ dịch” mặc định là ChatGPT Web; app nhớ lựa chọn cho lần sau.
 
 File .exe đã build từ bản cũ vẫn chứa mã và thành phần cũ. Muốn dùng bản mới, chạy run_windows.bat hoặc build lại bằng build_exe_windows.bat. Chỉ dùng module đã kèm trong repository; không bổ sung lại module chính của ứng dụng ngoài.
 
