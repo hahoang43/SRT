@@ -16,7 +16,7 @@ from PySide6.QtGui import QColor, QBrush, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QStackedWidget,
     QPushButton, QScrollArea, QSpinBox, QSplitter, QTableView, QVBoxLayout,
     QWidget,
 )
@@ -35,6 +35,7 @@ from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make
 from native_chatgpt_bridge import WebBridge, load_web_bridge, NATIVE_SEND_ACK_JS, RESUME_NATIVE_WAIT_JS
 from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
 from gemini_backend import GeminiClient, DEFAULT_MODEL, api_key, model_name
+import gemini_web
 
 WEB_BRIDGE = WebBridge()
 _native_checked = False
@@ -117,7 +118,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self, backend=None):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT v1.9.0 — ChatGPT Web | Gemini API')
+        self.setWindowTitle('DỊCH SRT v1.9.1 — ChatGPT Web | Gemini Web & API')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -132,6 +133,10 @@ class App(QMainWindow):
         self.prompt = self.settings.value('prompt', DEFAULT_PROMPT, type=str) or DEFAULT_PROMPT
         self.web_batch: list[int] = []
         self._web_loaded = False
+        self._web_contexts = {}
+        self._web_popups = []
+        self._loaded_providers = set()
+        self._web_provider = 'web'
         self._connection_state = 'idle'
         self._connection_deadline = 0.0
         self._connection_baseline = 0
@@ -166,7 +171,7 @@ class App(QMainWindow):
         self._build_ui()
         self._style()
         self._on_backend_changed()
-        self.log('SRT v1.9.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT v1.9.1 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -185,7 +190,7 @@ class App(QMainWindow):
 
         top = QHBoxLayout()
         branding = QVBoxLayout()
-        heading = QLabel('DỊCH SRT — CHATGPT WEB & GEMINI API')
+        heading = QLabel('DỊCH SRT — CHATGPT & GEMINI')
         heading.setObjectName('heading')
         branding.addWidget(heading)
         note = QLabel('Chuẩn hóa JSON đầu vào/đầu ra · Dịch cuốn chiếu · Khóa ID và thời gian')
@@ -279,8 +284,9 @@ class App(QMainWindow):
         backend_layout = QVBoxLayout(backend_group)
         self.backend_box = QComboBox()
         self.backend_box.addItem('ChatGPT Web', 'web')
+        self.backend_box.addItem('Gemini Web — đăng nhập Google, không cần API key', 'gemini_web')
         self.backend_box.addItem('Gemini API — key Google AI Studio', 'gemini')
-        self.backend_box.setCurrentIndex(1 if self._initial_backend == 'gemini' else 0)
+        self.backend_box.setCurrentIndex(max(0, self.backend_box.findData(self._initial_backend)))
         backend_layout.addWidget(self.backend_box)
         self.gemini_controls = QWidget()
         gemini_layout = QVBoxLayout(self.gemini_controls)
@@ -315,10 +321,10 @@ class App(QMainWindow):
         self.web_connect_controls = QWidget()
         web_connect_layout = QVBoxLayout(self.web_connect_controls)
         web_connect_layout.setContentsMargins(0, 0, 0, 0)
-        connect_note = QLabel('Nhấn Kết nối để mở ChatGPT trong app và kiểm tra ô chat đã sẵn sàng. '
+        self.connect_note = QLabel('Nhấn Kết nối để mở ChatGPT trong app và kiểm tra ô chat đã sẵn sàng. '
                               'Ứng dụng không tự gửi lời chào. Dùng được chế độ khách khi ChatGPT cho phép; không bắt đăng nhập ở phía ứng dụng.')
-        connect_note.setWordWrap(True)
-        web_connect_layout.addWidget(connect_note)
+        self.connect_note.setWordWrap(True)
+        web_connect_layout.addWidget(self.connect_note)
         self.test_btn = self._button('🧪 KIỂM TRA KẾT NỐI WEB', self.connect_and_open, 'light')
         web_connect_layout.addWidget(self.test_btn)
         backend_layout.addWidget(self.web_connect_controls)
@@ -377,7 +383,8 @@ class App(QMainWindow):
         self.web_panel.setObjectName('panel')
         web_layout = QVBoxLayout(self.web_panel)
         web_heading = QHBoxLayout()
-        web_heading.addWidget(QLabel('CHATGPT WEB — KẾT NỐI & DỊCH TỰ ĐỘNG'), 1)
+        self.web_heading = QLabel('CHATGPT WEB — KẾT NỐI & DỊCH TỰ ĐỘNG')
+        web_heading.addWidget(self.web_heading, 1)
         web_heading.addWidget(self._button('Hiện ô chat', self.reveal_chat_editor))
         web_heading.addWidget(self._button('⟳', self.reload_web))
         web_heading.addWidget(self._button('✕', self.toggle_web))
@@ -385,6 +392,8 @@ class App(QMainWindow):
         self.web_status = QLabel('Nhấn Mở kết nối AI để kiểm tra ChatGPT Web đã sẵn sàng.')
         self.web_status.setWordWrap(True)
         web_layout.addWidget(self.web_status)
+        self.web_stack = QStackedWidget()
+        web_layout.addWidget(self.web_stack, 1)
         if WEB_AVAILABLE:
             self.web_view = QWebEngineView()
             # Reuse web cookies for manual browsing. Credentials never read by this app.
@@ -397,8 +406,10 @@ class App(QMainWindow):
             self.web_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
             self.web_page = QWebEnginePage(self.web_profile, self.web_view)
             self.web_view.setPage(self.web_page)
-            self.web_view.loadFinished.connect(self._web_loaded_callback)
-            web_layout.addWidget(self.web_view, 1)
+            view = self.web_view
+            view.loadFinished.connect(lambda ok: self._web_loaded_callback(ok) if self.web_view is view else None)
+            self.web_stack.addWidget(view)
+            self._web_contexts['web'] = (view, self.web_profile, self.web_page)
         else:
             self.web_view = None
             web_layout.addWidget(QLabel('Thiếu QtWebEngine. Không thể thực hiện phép thử nhắn tin trong ứng dụng.'))
@@ -447,7 +458,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT v1.9.0\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT v1.9.1\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -571,20 +582,92 @@ class App(QMainWindow):
     def _uses_gemini(self):
         return self.backend_box.currentData() == 'gemini'
 
+    def _uses_gemini_web(self):
+        return self.backend_box.currentData() == 'gemini_web'
+
+    def _web_name(self):
+        return 'Gemini' if self._uses_gemini_web() else 'ChatGPT'
+
+    def _web_probe_js(self):
+        return gemini_web.PROBE_JS if self._uses_gemini_web() else PROBE_JS
+
+    def _web_read_js(self):
+        return gemini_web.READ_LATEST_RESPONSE_JS if self._uses_gemini_web() else READ_LATEST_RESPONSE_JS
+
+    def _web_send_js(self):
+        return gemini_web.SEND_MESSAGE_JS if self._uses_gemini_web() else SEND_MESSAGE_JS
+
+    def _select_web_context(self):
+        if not WEB_AVAILABLE:
+            return
+        provider = 'gemini_web' if self._uses_gemini_web() else 'web'
+        if provider not in self._web_contexts:
+            from PySide6.QtCore import QStandardPaths
+            data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
+            profile = QWebEngineProfile('SrtWebGemini', self)
+            profile.setPersistentStoragePath(str(data_dir / 'gemini_profile'))
+            profile.setCachePath(str(data_dir / 'gemini_cache'))
+            profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
+            view = QWebEngineView()
+            page = QWebEnginePage(profile, view)
+            view.setPage(page)
+            page.newWindowRequested.connect(lambda request: self._open_web_popup(request, profile))
+            view.loadFinished.connect(lambda ok: self._web_loaded_callback(ok) if self.web_view is view else None)
+            self.web_stack.addWidget(view)
+            self._web_contexts[provider] = (view, profile, page)
+        self._web_provider = provider
+        self.web_view, self.web_profile, self.web_page = self._web_contexts[provider]
+        self.web_stack.setCurrentWidget(self.web_view)
+        self._web_loaded = provider in self._loaded_providers
+
+    def _open_web_popup(self, request, profile):
+        """Let Google's normal sign-in popup share only its provider profile."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Gemini Web — đăng nhập / xác minh trên trang Google')
+        dialog.resize(620, 760)
+        view = QWebEngineView(dialog)
+        page = QWebEnginePage(profile, view)
+        view.setPage(page)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(view)
+        page.windowCloseRequested.connect(dialog.close)
+        page.newWindowRequested.connect(lambda pending: self._open_web_popup(pending, profile))
+        self._web_popups.append(dialog)
+        dialog.finished.connect(lambda _: self._web_popups.remove(dialog) if dialog in self._web_popups else None)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        request.openIn(page)
+        dialog.show()
+
+    def _load_active_web(self):
+        url = gemini_web.WEB_URL if self._uses_gemini_web() else 'https://chatgpt.com/'
+        self._loaded_providers.add(self._web_provider)
+        self.web_view.setUrl(QUrl(url))
+        self.log(f'Đang tải trang {self._web_name()} (đăng nhập trực tiếp trên Web nếu được yêu cầu).')
+
     def _on_backend_changed(self):
         if self.auto_session:
             self.stop_translation()
+        self._stop_reply_capture()
         self.gemini.cancel()
         self._end_connection_test()
         self._connection_state = 'idle'
         using_api = self._uses_gemini()
+        self._select_web_context()
+        name = self._web_name()
         if self._remember_backend:
             self.settings.setValue('translation_backend', self.backend_box.currentData())
         self.gemini_controls.setVisible(using_api)
         self.web_connect_controls.setVisible(not using_api)
         self.web_btn.setVisible(not using_api)
         self.auto_recover_checkbox.setVisible(not using_api)
-        self.connect_btn.setText('⚡ Kiểm tra Gemini' if using_api else '⚡ Mở ChatGPT Web')
+        self.connect_btn.setText('⚡ Kiểm tra Gemini API' if using_api else f'⚡ Mở {name} Web')
+        self.web_heading.setText(f'{name.upper()} WEB — KẾT NỐI & DỊCH TỰ ĐỘNG')
+        self.connect_note.setText(
+            'Gemini Web mở ngay trong app. Đăng nhập tài khoản Google trực tiếp trên trang, rồi bấm Kiểm tra kết nối Web. '
+            'Không cần API key. Hạn mức Gemini Web vẫn áp dụng; nếu Google chặn trình duyệt nhúng hoặc yêu cầu xác minh, '
+            'ứng dụng sẽ chờ bạn xử lý, không tự vượt qua.' if self._uses_gemini_web() else
+            'Nhấn Kết nối để mở ChatGPT trong app và kiểm tra ô chat sẵn sàng. Không tự gửi lời chào; '
+            'có thể dùng chế độ khách khi ChatGPT cho phép.')
         self.batch_spin.setRange(1, 150)
         self.batch_spin.setValue(20)
         self.timeout_spin.setRange(15, 600 if using_api else 300)
@@ -597,12 +680,20 @@ class App(QMainWindow):
             self._status('● Gemini API — chưa kiểm tra')
             self.log('Bộ dịch: Gemini API. Free tier theo quota của Google AI Studio; không tự thử lại khi lỗi API.')
         else:
-            self._status('● Chưa kiểm tra ChatGPT Web')
-            self.log('Bộ dịch: ChatGPT Web. Hạn mức của ChatGPT vẫn áp dụng.')
+            self.web_panel.hide()
+            self.web_btn.setText('🌐 Hiện Web')
+            self._status(f'● Chưa kiểm tra {name} Web')
+            self.web_status.setText(f'Đăng nhập Google trên Gemini rồi kiểm tra ô chat.' if self._uses_gemini_web()
+                                    else 'Nhấn Mở ChatGPT Web để kiểm tra ô chat sẵn sàng.')
+            self.log(f'Bộ dịch: {name} Web. Hạn mức của {name} vẫn áp dụng.')
+            if self._uses_gemini_web():
+                self.toggle_web()
         self._update_gemini_controls()
 
     def _ensure_web_bridge(self):
         global WEB_BRIDGE, PROBE_JS, READ_LATEST_RESPONSE_JS, _native_checked
+        if self._uses_gemini_web():
+            return
         if not _native_checked and not WEB_BRIDGE.native:
             WEB_BRIDGE = load_web_bridge()
             PROBE_JS = WEB_BRIDGE.probe_js
@@ -697,9 +788,10 @@ class App(QMainWindow):
         self._probe_busy = False
         self.connect_btn.setEnabled(False)
         self.test_btn.setEnabled(False)
-        self._status('◌ Đang kiểm tra ChatGPT Web…', '#ab7700')
-        self.web_status.setText('Đang kiểm tra ô chat. Không cần đăng nhập nếu ChatGPT cho phép dùng chế độ khách.')
-        self.log('🔌 Bắt đầu kiểm tra Web; không tự gửi lời chào và không sử dụng OpenAI API key.')
+        self._status(f'◌ Đang kiểm tra {self._web_name()} Web…', '#ab7700')
+        self.web_status.setText('Đang kiểm tra ô chat Gemini. Đăng nhập Google trực tiếp trên trang nếu được yêu cầu.' if self._uses_gemini_web() else
+                                'Đang kiểm tra ô chat. Không cần đăng nhập nếu ChatGPT cho phép dùng chế độ khách.')
+        self.log(f'🔌 Bắt đầu kiểm tra {self._web_name()} Web; không tự gửi lời chào và không sử dụng API key.')
         self.connection_timer.start()
         QTimer.singleShot(500, self._probe_web_connection)
 
@@ -714,12 +806,15 @@ class App(QMainWindow):
         self._connection_state = 'failed'
         self._status('● Chưa xác nhận kết nối Web', '#c43140')
         self.web_status.setText(explanation)
-        self.log('⚠ Kiểm tra ChatGPT Web không thành công: ' + explanation)
+        self.log(f'⚠ Kiểm tra {self._web_name()} Web không thành công: ' + explanation)
         QMessageBox.warning(self, 'Chưa kiểm tra được kết nối', explanation)
 
     def _run_web_script(self, script: str, callback):
         """Serialize objects explicitly across the Qt JavaScript/Python boundary."""
+        page = self.web_view.page()
         def decoded(value):
+            if self.web_view is None or self.web_view.page() is not page:
+                return
             try:
                 result = json.loads(value) if isinstance(value, str) else value
             except (TypeError, ValueError):
@@ -728,7 +823,7 @@ class App(QMainWindow):
                 self.log('⚠ Lỗi đọc Web: ' + str(result['scriptError']))
             callback(result)
 
-        self.web_view.page().runJavaScript(
+        page.runJavaScript(
             '(() => { try { return JSON.stringify(' + script +
             '); } catch (error) { return JSON.stringify({scriptError:String(error)}); } })()', decoded)
 
@@ -736,7 +831,7 @@ class App(QMainWindow):
         if self._connection_state != 'looking_for_editor' or self._probe_busy:
             return
         if time.monotonic() >= self._connection_deadline:
-            self._connection_failed('Hết thời gian chờ. Hãy kiểm tra ChatGPT và ô chat trong khung Web, '
+            self._connection_failed(f'Hết thời gian chờ. Hãy kiểm tra {self._web_name()} và ô chat trong khung Web, '
                                     'kiểm tra trang đã tải được, rồi nhấn Kết nối lại. '
                                     'Ứng dụng không tự đăng nhập hoặc vượt bước xác minh.')
             return
@@ -744,7 +839,7 @@ class App(QMainWindow):
             return
         self._probe_busy = True
         state = self._connection_state
-        self._run_web_script(PROBE_JS, lambda result: self._on_probe(result, state))
+        self._run_web_script(self._web_probe_js(), lambda result: self._on_probe(result, state))
 
     def _on_probe(self, probe, original_state: str):
         self._probe_busy = False
@@ -757,18 +852,19 @@ class App(QMainWindow):
             self.web_status.setText('ChatGPT yêu cầu thử lại sau ' + str(probe.get('clock', 'thời gian trên Web')) + '. Bắt đầu dịch sẽ giữ tiến độ và chờ theo thông báo.')
             return
         if not isinstance(probe, dict) or not probe.get('site'):
-            self.web_status.setText('Đang chờ chuyển đến chatgpt.com; có thể đang ở trang đăng nhập.')
+            self.web_status.setText(f'Đang chờ chuyển đến {self._web_name()} Web; có thể đang ở trang đăng nhập.')
             return
         if not probe.get('editor'):
-            self.web_status.setText('Đang chờ ô chat sẵn sàng; chế độ khách được hỗ trợ khi trang cho phép.')
+            self.web_status.setText('Đang chờ ô nhập Gemini; đăng nhập Google và hoàn tất xác minh nếu trang yêu cầu.' if self._uses_gemini_web() else
+                                    'Đang chờ ô chat sẵn sàng; chế độ khách được hỗ trợ khi trang cho phép.')
             return
         self._end_connection_test()
         self._connection_state = 'success'
-        self._status('● ChatGPT Web đã kết nối', '#168b50')
-        self.web_status.setText('✓ Kết nối thành công: ChatGPT Web và ô chat đã sẵn sàng.')
+        self._status(f'● {self._web_name()} Web đã kết nối', '#168b50')
+        self.web_status.setText(f'✓ Kết nối thành công: {self._web_name()} Web và ô chat đã sẵn sàng.')
         self.log('✅ KẾT NỐI WEB THÀNH CÔNG: đã xác nhận trang và ô chat, không gửi tin nhắn.')
-        self.show_notice('✅ KẾT NỐI CHATGPT WEB THÀNH CÔNG!\n\n'
-                         'Đã xác nhận ChatGPT Web và ô chat đã sẵn sàng.\n'
+        self.show_notice(f'✅ KẾT NỐI {self._web_name().upper()} WEB THÀNH CÔNG!\n\n'
+                         f'Đã xác nhận {self._web_name()} Web và ô chat đã sẵn sàng.\n'
                          'Ứng dụng không tự động gửi lời chào.\n\n'
                          'Lưu ý: đây là kiểm tra giao diện Web, không phải kết nối API dịch tự động.')
 
@@ -780,8 +876,7 @@ class App(QMainWindow):
             self.splitter.setSizes([710, 390, 540])
             if self.web_view and not self._web_loaded:
                 self._web_loaded = True
-                self.web_view.setUrl(QUrl('https://chatgpt.com/'))
-                self.log('Đang tải trang ChatGPT (có thể cần đăng nhập riêng).')
+                self._load_active_web()
         else:
             self.splitter.setSizes([950, 490, 0])
 
@@ -800,7 +895,7 @@ class App(QMainWindow):
             else:
                 self.web_status.setText('Không tìm thấy ô nhập trong trang. Nhấn ⟳ để tải lại Web với hồ sơ hiện có; tiến độ đã dịch được giữ nguyên.')
                 self._status('● Chưa thấy ô chat', '#ab7700')
-        self._run_web_script(REVEAL_EDITOR_JS, revealed)
+        self._run_web_script(gemini_web.REVEAL_EDITOR_JS if self._uses_gemini_web() else REVEAL_EDITOR_JS, revealed)
 
     def reload_web(self):
         if self.web_view:
@@ -813,7 +908,8 @@ class App(QMainWindow):
 
     def _web_loaded_callback(self, loaded: bool):
         if loaded:
-            self.log('✓ Trang Web đã tải. Có thể dùng chế độ khách khi ô chat sẵn sàng.')
+            self.log('✓ Đã tải Gemini Web. Đăng nhập Google nếu trang yêu cầu, rồi kiểm tra ô nhập.' if self._uses_gemini_web() else
+                     '✓ Trang Web đã tải. Có thể dùng chế độ khách khi ô chat sẵn sàng.')
             if self._connection_state == 'looking_for_editor':
                 QTimer.singleShot(450, self._probe_web_connection)
             elif self._connection_state == 'idle':
@@ -866,7 +962,7 @@ class App(QMainWindow):
         self._update_gemini_controls()
         if not self._uses_gemini() and not self.web_panel.isVisible():
             self.toggle_web()
-        engine = 'Gemini ' + self.auto_api_model if self._uses_gemini() else 'ChatGPT Web'
+        engine = 'Gemini API ' + self.auto_api_model if self._uses_gemini() else self._web_name() + ' Web'
         self.log(f'Bắt đầu dịch bằng {engine}: mỗi lô {self.batch_spin.value()} dòng.')
         self._queue_next_auto_batch()
 
@@ -901,7 +997,7 @@ class App(QMainWindow):
                 self._auto_failed(str(error))
             return
         self.web_status.setText(f'Đang gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
-        self._run_batch_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
+        self._run_batch_script(self._web_probe_js(), lambda result: self._on_batch_probe(result, prompt))
 
     def _run_batch_script(self, script, callback):
         generation = self.auto_generation
@@ -986,7 +1082,7 @@ class App(QMainWindow):
 
     def _retry_editor_probe(self, prompt):
         self.auto_editor_deadline = time.monotonic() + 30
-        self._run_batch_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
+        self._run_batch_script(self._web_probe_js(), lambda result: self._on_batch_probe(result, prompt))
 
     def _retry_response_read(self):
         self.auto_deadline = time.monotonic() + 30
@@ -1030,23 +1126,23 @@ class App(QMainWindow):
                 self._auto_failed('Hết thời gian chờ ô chat có thể nhập. Đăng nhập không bảo đảm giao diện đã sẵn sàng; kiểm tra trang đã tải xong, đóng hộp thoại trên Web hoặc xem thông báo của trang. Bản dịch đã lưu được giữ nguyên.')
                 return
             self._status('◌ Chưa thấy ô chat sẵn sàng', '#ab7700')
-            self.web_status.setText('Đang chờ giao diện ChatGPT và ô chat sẵn sàng…')
+            self.web_status.setText(f'Đang chờ giao diện {self._web_name()} và ô chat sẵn sàng…')
             if not self.auto_editor_wait_logged:
                 self.log('◌ Đang chờ ô chat có thể nhập; chưa gửi lô và chưa kết luận lỗi đăng nhập.')
                 self.auto_editor_wait_logged = True
             generation = self.auto_generation
             def probe_again():
                 if self.auto_session and generation == self.auto_generation:
-                    self._run_batch_script(PROBE_JS, lambda value: self._on_batch_probe(value, prompt))
+                    self._run_batch_script(self._web_probe_js(), lambda value: self._on_batch_probe(value, prompt))
             QTimer.singleShot(750, probe_again)
             return
-        self._status('● Ô chat ChatGPT đã sẵn sàng', '#168b50')
+        self._status(f'● Ô chat {self._web_name()} đã sẵn sàng', '#168b50')
         self.auto_baseline = int(result.get('assistantCount') or 0)
         self.auto_baseline_text = result.get('lastText', '')
         self.auto_dom_chars = None
         self.auto_last_response = ''
         self.auto_stable_reads = 0
-        if WEB_BRIDGE.native:
+        if WEB_BRIDGE.native and not self._uses_gemini_web():
             try:
                 script = with_reply_capture(WEB_BRIDGE.send_js(prompt, self.auto_generation), self.auto_batch, self.auto_generation)
             except Exception as error:
@@ -1057,7 +1153,9 @@ class App(QMainWindow):
             self.auto_send_deadline = time.monotonic() + min(30, self.timeout_spin.value())
             self._run_batch_script(script, self._on_native_queued)
         else:
-            self._run_batch_script(with_reply_capture(make_send_message_js(prompt), self.auto_batch, self.auto_generation), self._on_batch_prepared)
+            prepared = (gemini_web.make_send_message_js(prompt, self.auto_generation) if self._uses_gemini_web()
+                        else make_send_message_js(prompt))
+            self._run_batch_script(with_reply_capture(prepared, self.auto_batch, self.auto_generation), self._on_batch_prepared)
 
     def _on_native_queued(self, result):
         if not isinstance(result, dict) or result.get('ok') is not True:
@@ -1101,7 +1199,7 @@ class App(QMainWindow):
             self.web_view.page().runJavaScript(STOP_CAPTURE_JS)
 
     def _cancel_native_pending(self):
-        if WEB_BRIDGE.native and self.auto_send_state == 'native_pending' and self.web_view is not None:
+        if WEB_BRIDGE.native and not self._uses_gemini_web() and self.auto_send_state == 'native_pending' and self.web_view is not None:
             self.web_view.page().runJavaScript('window.__srtNativeSendId = null;')
 
     def _on_batch_prepared(self, result):
@@ -1125,7 +1223,7 @@ class App(QMainWindow):
                                       ' Bản dịch đã nhận vẫn được lưu. Kiểm tra thông báo thực tế trên Web trước khi thử lại.')
                     return
                 self.auto_send_state = 'checking'
-                self._run_batch_script(SEND_MESSAGE_JS, self._on_batch_sent)
+                self._run_batch_script(self._web_send_js(), self._on_batch_sent)
         QTimer.singleShot(delay, send)
 
     def _on_batch_sent(self, result):
@@ -1158,7 +1256,7 @@ class App(QMainWindow):
             self._auto_failed(self.auto_last_error or f'Chưa nhận được JSON dịch mới hợp lệ cho lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}. Không dùng phản hồi cũ thay cho lô này. Bản dịch trước đó vẫn được lưu; kiểm tra phản hồi hoặc thông báo thực tế trên Web trước khi thử lại.')
             return
         self.auto_poll_busy = True
-        self._run_batch_script(read_with_capture(READ_LATEST_RESPONSE_JS, self.auto_generation), self._on_batch_response)
+        self._run_batch_script(read_with_capture(self._web_read_js(), self.auto_generation), self._on_batch_response)
 
     def _on_batch_response(self, result):
         self.auto_poll_busy = False
@@ -1186,7 +1284,7 @@ class App(QMainWindow):
                 self.log('Cấu trúc Web: ' + json.dumps(result['diagnostics'], ensure_ascii=False))
         changed = result.get('lastText', '') != self.auto_baseline_text if isinstance(result, dict) else False
         if isinstance(result, dict) and result.get('site') is False:
-            self._auto_failed('Trang hiện tại không còn là ChatGPT. Bản dịch hợp lệ đã nhận vẫn được lưu; kiểm tra Web trước khi tiếp tục.')
+            self._auto_failed(f'Trang hiện tại không còn là {self._web_name()}. Bản dịch hợp lệ đã nhận vẫn được lưu; kiểm tra Web trước khi tiếp tục.')
             return
         # A guest page can remove a reply immediately after streaming. Validate
         # and checkpoint a complete batch on its FIRST visible read. Never
@@ -1353,6 +1451,8 @@ class App(QMainWindow):
 
 
     def closeEvent(self, event):
+        for popup in list(self._web_popups):
+            popup.close()
         self.gemini.cancel()
         self.auto_api_key = ''
         self._stop_reply_capture()

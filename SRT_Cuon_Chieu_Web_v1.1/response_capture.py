@@ -12,7 +12,8 @@ def with_reply_capture(script, cues, request_id):
       const state = {requestId:REQUEST_ID, text:'', matches:0};
       const baseline = new Set();
       const blocked = el => !el || el.closest('form, textarea, [contenteditable], script, style, pre[data-user], ' +
-        '[data-message-author-role="user"], [data-turn="user"]');
+        'user-query, [data-message-author-role="user"], [data-turn="user"]') ||
+        (location.hostname === 'gemini.google.com' && !el.closest('model-response'));
       const objects = raw => {
         const found = [];
         const starts = /\{\s*"items"\s*:/g;
@@ -52,12 +53,12 @@ def with_reply_capture(script, cues, request_id):
       };
       // Old replies remain on screen when a new batch starts. Never import one
       // simply because a parent container changed or was re-rendered.
-      for (const root of document.querySelectorAll('main, [role="main"], #thread, #conversation')) {
+      for (const root of document.querySelectorAll('main, [role="main"], #thread, #conversation, chat-window, #chat-history')) {
         for (const text of objects((root.textContent || '').slice(-500000))) baseline.add(text);
       }
       const inspect = el => {
         if (!el || el.nodeType!==1 || blocked(el)) return;
-        const root=el.closest('main, [role="main"], #thread, #conversation');
+        const root=el.closest('main, [role="main"], #thread, #conversation, chat-window, #chat-history');
         if (!root) return;
         const raw=el.textContent || '';
         if (raw.length>150000 || raw.indexOf('"items"')<0) return;

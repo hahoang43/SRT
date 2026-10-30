@@ -80,7 +80,7 @@ class AppGeminiTests(unittest.TestCase):
                 try:
                     self.assertEqual(window.backend_box.currentData(), 'web')
                     self.assertEqual([window.backend_box.itemData(i) for i in range(window.backend_box.count())],
-                                     ['web', 'gemini'])
+                                     ['web', 'gemini_web', 'gemini'])
                     self.assertIsNone(window.web_view)
                     native.assert_not_called()
                     self.assertEqual(settings.value('translation_backend'), 'web')

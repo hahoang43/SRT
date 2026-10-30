@@ -1,15 +1,26 @@
-# SRT Cuốn Chiếu v1.9.0
+# SRT Cuốn Chiếu v1.9.1
 
-Ứng dụng Python/PySide6 dịch phụ đề Trung → Việt, giữ ID và mốc thời gian. **ChatGPT Web là bộ dịch mặc định**; có thể chọn **Gemini API** với API key từ Google AI Studio. Bản này đã bỏ Ollama; thiết lập bộ dịch Ollama cũ tự chuyển về ChatGPT Web, không xóa cookie hay checkpoint.
+Ứng dụng Python/PySide6 dịch phụ đề Trung → Việt, giữ ID và mốc thời gian. **ChatGPT Web là bộ dịch mặc định**; có thể chọn **Gemini Web** để đăng nhập Google và dịch trong khung web, hoặc **Gemini API** với key Google AI Studio. Bản này đã bỏ Ollama; thiết lập bộ dịch Ollama cũ tự chuyển về ChatGPT Web, không xóa cookie hay checkpoint.
 
 ## Cài và chạy trên Windows
 
 1. Cài Python 3.12, bản 64-bit, cho launcher hiện có và chế độ Web tùy chọn.
 2. Cập nhật repository bằng git pull origin main.
 3. Chạy run_windows.bat để cài PySide6 và mở app.
-4. Tiêu đề phải hiện v1.9.0. Mục “Chọn bộ dịch” mặc định là ChatGPT Web; app nhớ lựa chọn cho lần sau.
+4. Tiêu đề phải hiện v1.9.1. Mục “Chọn bộ dịch” mặc định là ChatGPT Web; app nhớ lựa chọn cho lần sau.
 
 File .exe đã build từ bản cũ vẫn chứa mã và thành phần cũ. Muốn dùng bản mới, chạy run_windows.bat hoặc build lại bằng build_exe_windows.bat. Chỉ dùng module đã kèm trong repository; không bổ sung lại module chính của ứng dụng ngoài.
+
+## Dùng Gemini Web trong app (không cần API key)
+
+1. Chọn **Gemini Web — đăng nhập Google, không cần API key** trong mục Chọn bộ dịch. Khung bên phải tự mở `https://gemini.google.com/app`, giống khung ChatGPT Web.
+2. Đăng nhập tài khoản Google trực tiếp trên trang Gemini. Nếu trang mở cửa sổ đăng nhập/xác minh, cửa sổ đó dùng cùng hồ sơ Gemini. App không nhập hộ mật khẩu, đọc thông tin đăng nhập hoặc vượt CAPTCHA. Nếu Google từ chối đăng nhập trong QtWebEngine, tính năng này chưa dùng được với tài khoản đó; đăng nhập trong trình duyệt ngoài không tự chuyển cookie vào app.
+3. Bấm **Mở Gemini Web / Kiểm tra kết nối Web**. Kiểm tra chỉ xác nhận đúng trang và ô nhập, không gửi lời chào. Sau khi thấy kết nối thành công, mở file SRT và bấm Bắt đầu dịch cuốn chiếu. Prompt và phản hồi xuất hiện trong khung Gemini; bản dịch hợp lệ tự cập nhật bảng và checkpoint.
+4. Tạm dừng, tiếp tục, dừng, hiện ô chat và tải lại hoạt động tương tự ChatGPT. Khi chờ phản hồi, app chỉ đọc lại; không gửi lại lô đã bấm gửi. Mỗi lô được kiểm tra ID và số dòng trước khi nhập; timestamp giữ nguyên.
+
+Gemini Web và Gemini API là **hai lựa chọn riêng**. Gemini Web dùng tài khoản Google, không dùng API key hay mô hình trong danh sách API; lỗi HTTP 404 của lựa chọn API không được xử lý bằng việc giảm số dòng/lô hoặc mở Web. App không tự chuyển giữa hai cách dịch. Hạn mức, mô hình, yêu cầu đăng nhập và xác minh của Gemini Web do Google quyết định.
+
+Cookie Gemini lưu trong `gemini_profile`, tách khỏi `chatgpt_profile`; chuyển bộ dịch giữ nguyên hồ sơ và tiến độ. Không dùng module `ai_chatgpt.pyd` cho Gemini Web. Gemini Web cần truy cập `gemini.google.com` và các trang đăng nhập/tài nguyên Google liên quan nếu mạng có giới hạn. DOM của Gemini có thể thay đổi; kiểm thử HTML cục bộ không thay thế kiểm tra đăng nhập/dịch thực tế trên Windows.
 
 ## Dùng Gemini API với Google AI Studio
 
@@ -26,7 +37,7 @@ Nếu sai key/quyền, hết quota (HTTP 429), mất mạng, hết thời gian, 
 ## Dịch SRT
 
 - Mở đúng file SRT ở vị trí cũ để khôi phục file .progress.json cùng thư mục.
-- Chọn Gemini với key/mô hình phù hợp, hoặc mở ChatGPT Web và kiểm tra ô nhập sẵn sàng. Phép kiểm tra Web không tự gửi lời chào.
+- Chọn ChatGPT Web hoặc Gemini Web rồi kiểm tra ô nhập sẵn sàng; nếu dùng Gemini API, nhập key và chọn mô hình phù hợp. Phép kiểm tra Web không tự gửi lời chào.
 - Chọn số dòng/lô, thời gian chờ và thời gian nghỉ giữa lô, rồi bắt đầu.
 - Bản dịch được kiểm tra đúng ID, không trùng ID và đúng số dòng mỗi cue trước khi cập nhật bảng/checkpoint. Timestamp không được gửi cho AI chỉnh sửa.
 - Các dòng hợp lệ được giữ lại; dòng thiếu/sai được thử lại riêng có giới hạn.
@@ -51,9 +62,9 @@ Dữ liệu đăng nhập vẫn do trang Web xử lý. Hồ sơ QtWebEngine gi�
 
 Từ thư mục SRT_Cuon_Chieu_Web_v1.1:
 
-    python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_gemini_backend test_app_gemini test_response_capture test_app_web_bridge
+    python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_gemini_backend test_app_gemini test_gemini_web test_response_capture test_app_web_bridge
 
-Trên Linux không màn hình, đặt QT_QPA_PLATFORM=offscreen và QT_QUICK_BACKEND=software. Các kiểm thử DOM trong test_web_connect cần Node.js; nếu thiếu sẽ báo skipped. Kiểm thử Gemini dùng máy chủ HTTP cục bộ giả lập REST API: Unicode, header key, phân trang mô hình, lỗi key/quota, hủy yêu cầu, timeout, phản hồi bị chặn/cắt, thử lại ID sai, checkpoint và xuất SRT. Không cần API key thật và không phát sinh yêu cầu tới Google; các test này không xác nhận quota, chất lượng dịch hoặc quyền gọi mô hình của một tài khoản thật. Kiểm thử Web dùng HTML cục bộ trên QtWebEngine, không thay thế kiểm tra thực tế với ChatGPT trên Windows.
+Trên Linux không màn hình, đặt QT_QPA_PLATFORM=offscreen và QT_QUICK_BACKEND=software. Các kiểm thử DOM trong test_web_connect cần Node.js; nếu thiếu sẽ báo skipped. Kiểm thử Gemini dùng máy chủ HTTP cục bộ giả lập REST API: Unicode, header key, phân trang mô hình, lỗi key/quota, hủy yêu cầu, timeout, phản hồi bị chặn/cắt, thử lại ID sai, checkpoint và xuất SRT. Không cần API key thật và không phát sinh yêu cầu tới Google; các test này không xác nhận quota, chất lượng dịch hoặc quyền gọi mô hình của một tài khoản thật. Kiểm thử Web dùng HTML cục bộ trên QtWebEngine: Gemini có kiểm tra gửi một lần, không gửi bản nháp bị sửa, chỉ đọc model-response, tách hồ sơ/cửa sổ đăng nhập và dịch nhiều lô vào checkpoint. Chưa thay thế kiểm tra đăng nhập và dịch thực tế với ChatGPT/Gemini trên Windows.
 
 Chạy build_exe_windows.bat trên Windows để build lại dist/SRT_Cuon_Chieu bằng PyInstaller. Spec thu thập ứng dụng, thư viện PySide6 và duy nhất binary ai_chatgpt đã kèm.
 
