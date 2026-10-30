@@ -1,40 +1,32 @@
-# SRT Cuốn Chiếu v1.8.0
+# SRT Cuốn Chiếu v1.9.0
 
-Ứng dụng Python/PySide6 dịch phụ đề Trung → Việt, giữ ID và mốc thời gian. Chế độ mặc định mới là **Ollama chạy trên máy**, không cần tài khoản ChatGPT hay API key. ChatGPT Web vẫn có thể chọn trong mục “Chọn bộ dịch”.
+Ứng dụng Python/PySide6 dịch phụ đề Trung → Việt, giữ ID và mốc thời gian. **ChatGPT Web là bộ dịch mặc định**; có thể chọn **Gemini API** với API key từ Google AI Studio. Bản này đã bỏ Ollama; thiết lập bộ dịch Ollama cũ tự chuyển về ChatGPT Web, không xóa cookie hay checkpoint.
 
 ## Cài và chạy trên Windows
 
 1. Cài Python 3.12, bản 64-bit, cho launcher hiện có và chế độ Web tùy chọn.
 2. Cập nhật repository bằng git pull origin main.
 3. Chạy run_windows.bat để cài PySide6 và mở app.
-4. Tiêu đề phải hiện v1.8.0. Mục “Chọn bộ dịch” mặc định là Ollama ở lần đầu; app nhớ lựa chọn cho lần sau.
+4. Tiêu đề phải hiện v1.9.0. Mục “Chọn bộ dịch” mặc định là ChatGPT Web; app nhớ lựa chọn cho lần sau.
 
 File .exe đã build từ bản cũ vẫn chứa mã và thành phần cũ. Muốn dùng bản mới, chạy run_windows.bat hoặc build lại bằng build_exe_windows.bat. Chỉ dùng module đã kèm trong repository; không bổ sung lại module chính của ứng dụng ngoài.
 
-## Dùng Ollama trên Windows
+## Dùng Gemini API với Google AI Studio
 
-1. Cài [Ollama cho Windows](https://ollama.com/download/windows), rồi mở Ollama. App SRT cũng có nút mở trang cài này.
-2. Trong SRT, chọn “Ollama — chạy trên máy, không đăng nhập”, bấm **Kiểm tra Ollama / Đọc mô hình đã cài**.
-3. Để mô hình **qwen3:4b**, bấm **Tải mô hình đã chọn** và chờ hoàn tất. Lần đầu cần Internet và dung lượng vài GB. Có thể dừng rồi tải tiếp. Nếu thích dùng CMD, lệnh tương đương là:
+1. Mở [Google AI Studio](https://aistudio.google.com/apikey), tạo API key cho dự án của bạn. Kiểm tra free tier, mô hình được hỗ trợ và hạn mức tại [trang giá](https://ai.google.dev/gemini-api/docs/pricing) và [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits). Có key không đồng nghĩa mọi mô hình đều miễn phí hoặc không giới hạn. Với dự án bật thanh toán, yêu cầu có thể tính phí theo cấu hình của Google; ứng dụng không tự bật thanh toán.
+2. Trong app, chọn **Gemini API — key Google AI Studio**, dán key vào ô được che. Key chỉ giữ trong phiên, không được lưu vào QSettings, checkpoint hay nhật ký. Có thể cung cấp qua biến môi trường `GEMINI_API_KEY` trước khi mở app; không đưa key vào repository hoặc chia sẻ trong chat.
+3. Bấm **Kiểm tra key / Đọc mô hình Gemini**. Bước này đọc danh sách mô hình, không gửi phụ đề hay yêu cầu sinh nội dung. Danh sách được lọc theo khả năng `generateContent` và không xác nhận mô hình còn quota miễn phí. Mặc định gợi ý `gemini-2.5-flash`; nếu Google đã đổi hoặc ngừng hỗ trợ, chọn tên mô hình khả dụng trong danh sách hoặc nhập tên khác rồi kiểm tra quota trong AI Studio.
+4. Mở file SRT rồi bấm **Bắt đầu dịch cuốn chiếu**. Mặc định 20 ID/lô, chờ tối đa 120 giây/yêu cầu, nghỉ 6 giây giữa lô. Giảm số dòng/lô khi đầu ra bị cắt. Mỗi lần chỉ gửi một yêu cầu dịch; thời gian nghỉ không bảo đảm tránh mọi giới hạn RPM/TPM/RPD của Google.
+5. **Tạm dừng** chờ lô hiện tại xong rồi ngừng chuẩn bị lô mới; **Tiếp tục** dịch phần còn thiếu. **Dừng Gemini / Dừng lại** hủy chờ phản hồi và giữ các lô đã lưu. Google vẫn có thể xử lý yêu cầu đã nhận dù phía ứng dụng đã hủy.
 
-       ollama pull qwen3:4b
+Gemini dùng REST qua HTTPS tới `generativelanguage.googleapis.com`, gửi key trong header `x-goog-api-key`, không đưa key vào URL và không chuyển hướng yêu cầu. Cần Internet và quyền truy cập domain này qua firewall/proxy. Chỉ phụ đề và prompt được gửi; timestamp được giữ ở máy. Không cần cài SDK Gemini hoặc tải mô hình. Chế độ Gemini không nạp binary ChatGPT và không tự chuyển bộ dịch khi có lỗi.
 
-4. Mở SRT rồi bấm **Bắt đầu dịch cuốn chiếu**. Kết quả tự điền vào cột tiếng Việt và checkpoint. Bấm **Lưu SRT** khi xong.
-
-Với RAM từ 16 GB và NVIDIA, qwen3:4b là lựa chọn khởi đầu. Ollama tự chọn GPU khi driver và VRAM phù hợp; nếu VRAM thiếu có thể dùng thêm RAM/CPU nên chậm hơn. Có thể nhập qwen3:8b rồi tải nếu máy đủ bộ nhớ, hoặc qwen3:1.7b nếu thiếu bộ nhớ. Chất lượng dịch phụ thuộc mô hình; nên kiểm tra một đoạn ngắn trước khi dịch phim dài.
-
-Mặc định 8 ID/lô, không nghỉ giữa lô, chờ tối đa 600 giây khi không có tiến triển. Mô hình được giữ trong bộ nhớ giữa các lô. Giảm số dòng/lô nếu máy chậm hoặc thiếu bộ nhớ; tăng thời gian chờ nếu lần nạp đầu lâu. App chỉ gửi một yêu cầu dịch tại một thời điểm, không tự gửi lại khi mất kết nối hoặc hết giờ.
-
-Sau khi đã cài Ollama và tải mô hình, có thể dịch khi ngắt Internet. Phụ đề chỉ gửi tới **127.0.0.1:11434**, không qua ChatGPT, không chịu hạn mức tin nhắn của ChatGPT. Chế độ Ollama không nạp module ai_chatgpt.pyd và từ chối mô hình cloud. Không tự chuyển sang Web khi có lỗi. Thời gian chạy, tốc độ và dung lượng vẫn phụ thuộc máy của bạn.
-
-**Tạm dừng** để lô đang xử lý hoàn tất rồi chờ, **Tiếp tục** chuyển sang phần còn thiếu. **Dừng Ollama / Dừng lại** hủy yêu cầu đang chạy và giữ các lô đã lưu. Nếu phản hồi sai ID/số dòng, chỉ những ID chưa hợp lệ được thử lại riêng, tối đa hai lần. Bản dịch đang phát dở chưa được nhập.
-
-Nếu báo không kết nối: kiểm tra Ollama đang mở, chạy ở địa chỉ mặc định. Nếu báo model not found: tải đúng mô hình đã chọn. Nếu Ollama hết bộ nhớ: dùng mô hình nhỏ hơn, đóng ứng dụng chiếm VRAM và giảm số dòng/lô.
+Nếu sai key/quyền, hết quota (HTTP 429), mất mạng, hết thời gian, nội dung bị chặn hoặc phản hồi chưa hoàn tất: phiên dừng, giữ checkpoint và báo lỗi; **không tự gửi lại yêu cầu API lỗi**. Kiểm tra key/quota/mô hình, chờ nếu cần rồi bấm Bắt đầu để tiếp tục phần còn thiếu. Với phản hồi hoàn tất nhưng sai JSON/ID/số dòng, các ID hợp lệ được giữ và chỉ ID chưa hợp lệ được thử lại riêng tối đa hai lần; các lần này cũng tiêu thụ quota. Bản dịch bị cắt giữa chừng không được nhập.
 
 ## Dịch SRT
 
 - Mở đúng file SRT ở vị trí cũ để khôi phục file .progress.json cùng thư mục.
-- Chọn Ollama đã có mô hình, hoặc mở ChatGPT Web và kiểm tra ô nhập sẵn sàng. Phép kiểm tra Web không tự gửi lời chào.
+- Chọn Gemini với key/mô hình phù hợp, hoặc mở ChatGPT Web và kiểm tra ô nhập sẵn sàng. Phép kiểm tra Web không tự gửi lời chào.
 - Chọn số dòng/lô, thời gian chờ và thời gian nghỉ giữa lô, rồi bắt đầu.
 - Bản dịch được kiểm tra đúng ID, không trùng ID và đúng số dòng mỗi cue trước khi cập nhật bảng/checkpoint. Timestamp không được gửi cho AI chỉnh sửa.
 - Các dòng hợp lệ được giữ lại; dòng thiếu/sai được thử lại riêng có giới hạn.
@@ -59,9 +51,9 @@ Dữ liệu đăng nhập vẫn do trang Web xử lý. Hồ sơ QtWebEngine gi�
 
 Từ thư mục SRT_Cuon_Chieu_Web_v1.1:
 
-    python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_ollama_backend test_app_ollama test_response_capture test_app_web_bridge
+    python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_gemini_backend test_app_gemini test_response_capture test_app_web_bridge
 
-Trên Linux không màn hình, đặt QT_QPA_PLATFORM=offscreen và QT_QUICK_BACKEND=software. Các kiểm thử DOM trong test_web_connect cần Node.js; nếu thiếu sẽ báo skipped. Kiểm thử Ollama dùng máy chủ HTTP cục bộ giả lập API thật: streaming Unicode, tải mô hình, hủy yêu cầu, timeout, retry, checkpoint và xuất SRT. Không cần tải mô hình cho bộ test; kiểm thử này không đánh giá chất lượng dịch hay tốc độ GPU thực tế. Kiểm thử Web dùng HTML cục bộ trên QtWebEngine, không thay thế kiểm tra thực tế với ChatGPT trên Windows.
+Trên Linux không màn hình, đặt QT_QPA_PLATFORM=offscreen và QT_QUICK_BACKEND=software. Các kiểm thử DOM trong test_web_connect cần Node.js; nếu thiếu sẽ báo skipped. Kiểm thử Gemini dùng máy chủ HTTP cục bộ giả lập REST API: Unicode, header key, phân trang mô hình, lỗi key/quota, hủy yêu cầu, timeout, phản hồi bị chặn/cắt, thử lại ID sai, checkpoint và xuất SRT. Không cần API key thật và không phát sinh yêu cầu tới Google; các test này không xác nhận quota, chất lượng dịch hoặc quyền gọi mô hình của một tài khoản thật. Kiểm thử Web dùng HTML cục bộ trên QtWebEngine, không thay thế kiểm tra thực tế với ChatGPT trên Windows.
 
 Chạy build_exe_windows.bat trên Windows để build lại dist/SRT_Cuon_Chieu bằng PyInstaller. Spec thu thập ứng dụng, thư viện PySide6 và duy nhất binary ai_chatgpt đã kèm.
 

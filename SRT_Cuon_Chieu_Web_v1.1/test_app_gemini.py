@@ -1,4 +1,4 @@
-"""Local Ollama HTTP -> production SRT controller -> checkpoint/export."""
+"""Gemini REST HTTP -> production SRT controller -> checkpoint/export."""
 import json
 from pathlib import Path
 import tempfile
@@ -7,11 +7,12 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QSettings, QTimer
 from PySide6.QtWidgets import QApplication
+from PySide6.QtNetwork import QNetworkProxy
 
 from app import App
-from ollama_backend import OllamaClient
+from gemini_backend import GeminiClient
 from srt_engine import parse_srt, restore_progress, srt_contents
-from test_ollama_backend import LocalServer
+from test_gemini_backend import LocalServer, FAKE_KEY
 
 SOURCE = ('1\n00:00:01,000 --> 00:00:02,000\n你好\n\n'
           '2\n00:00:02,000 --> 00:00:03,000\n别担心\n我帮你\n\n'
@@ -19,7 +20,7 @@ SOURCE = ('1\n00:00:01,000 --> 00:00:02,000\n你好\n\n'
 VI = {1:'Xin chào',2:'Đừng lo\nTôi giúp bạn',3:'Tạm biệt'}
 
 
-class AppOllamaTests(unittest.TestCase):
+class AppGeminiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.qt = QApplication.instance() or QApplication([])
@@ -27,17 +28,14 @@ class AppOllamaTests(unittest.TestCase):
 
     def window(self, server, temp):
         with patch('app.WEB_AVAILABLE',False):
-            window = App(backend='ollama')
-        window.ollama.deleteLater()
-        window.ollama = OllamaClient(window,server.url)
-        window.ollama.translated.connect(window._on_ollama_response)
-        window.ollama.translation_progress.connect(window._ollama_translation_progress)
-        window.ollama.failed.connect(window._ollama_failed)
+            window = App(backend='gemini')
+        window.gemini.manager.setProxy(QNetworkProxy(QNetworkProxy.ProxyType.NoProxy))
+        window.gemini_key.setText(FAKE_KEY)
         window.model.load_cues(parse_srt(SOURCE))
         window.path = Path(temp)/'sample.srt'
         window.path.write_text(SOURCE)
         window.source_content = SOURCE
-        window.ollama_model.setCurrentText('qwen3:4b')
+        window.gemini_model.setCurrentText('gemini-2.5-flash')
         window.batch_spin.setValue(2)
         window.delay_spin.setValue(0)
         return window
@@ -68,36 +66,60 @@ class AppOllamaTests(unittest.TestCase):
 
     @staticmethod
     def send_translation(handler, rows):
-        text=json.dumps({'items':rows},ensure_ascii=False)
-        LocalServer.stream(handler,[{'message':{'content':text[:len(text)//2]},'done':False},
-            {'message':{'content':text[len(text)//2:]},'done':True}])
+        LocalServer.translation(handler, rows)
 
-    def test_default_is_local_without_loading_native_or_browsing_web(self):
+    def test_default_and_removed_backend_settings_use_chatgpt(self):
+        for previous in (None, 'ollama'):
+            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as temp:
+                settings = QSettings(str(Path(temp)/'settings.ini'), QSettings.Format.IniFormat)
+                if previous:
+                    settings.setValue('translation_backend', previous)
+                with (patch('app.QSettings', return_value=settings), patch('app.load_web_bridge') as native,
+                      patch('app.WEB_AVAILABLE', False)):
+                    window = App()
+                try:
+                    self.assertEqual(window.backend_box.currentData(), 'web')
+                    self.assertEqual([window.backend_box.itemData(i) for i in range(window.backend_box.count())],
+                                     ['web', 'gemini'])
+                    self.assertIsNone(window.web_view)
+                    native.assert_not_called()
+                    self.assertEqual(settings.value('translation_backend'), 'web')
+                finally:
+                    self.close_window(window)
+
+    def test_key_is_masked_and_not_persisted_and_missing_key_prevents_request(self):
         with tempfile.TemporaryDirectory() as temp:
-            settings=QSettings(str(Path(temp)/'settings.ini'),QSettings.Format.IniFormat)
-            with (patch('app.QSettings',return_value=settings),patch('app.load_web_bridge') as native,
-                  patch('app.WEB_AVAILABLE',False)):
-                window=App()
+            settings = QSettings(str(Path(temp)/'settings.ini'), QSettings.Format.IniFormat)
+            with patch('app.QSettings', return_value=settings), patch('app.WEB_AVAILABLE', False):
+                window = App(backend='gemini')
             try:
-                self.assertTrue(window._uses_ollama())
-                self.assertEqual(window.ollama_model.currentText(),'qwen3:4b')
-                self.assertEqual(window.delay_spin.value(),0)
-                self.assertIsNone(window.web_view)
-                native.assert_not_called()
+                self.assertEqual(window.gemini_key.echoMode(), window.gemini_key.EchoMode.Password)
+                window.model.load_cues(parse_srt(SOURCE))
+                notices = []
+                window.show_notice = notices.append
+                window.gemini_key.clear()
+                with patch.object(window.gemini, 'translate') as translate:
+                    window.start_translation()
+                    translate.assert_not_called()
+                self.assertEqual(len(notices), 1)
+                self.assertFalse(window.auto_session)
+                window.gemini_key.setText(FAKE_KEY)
+                window.close()
+                settings.sync()
+                self.assertNotIn(FAKE_KEY, settings.fileName() and Path(settings.fileName()).read_text()
+                                 if Path(settings.fileName()).exists() else '')
+                self.assertNotIn(FAKE_KEY, window.log_text.toPlainText())
             finally:
                 self.close_window(window)
 
     def test_batches_pause_resume_checkpoint_and_export_preserve_timestamps(self):
         batches=[]
         def respond(h,p,d):
-            if p=='/api/show':
-                LocalServer.json(h,{})
-                return
-            payload=json.loads(d['messages'][0]['content'].split('DỮ LIỆU JSON:\n')[1])
+            payload=json.loads(d['contents'][0]['parts'][0]['text'].split('DỮ LIỆU JSON:\n')[1])
             ids=[row['id'] for row in payload]
             batches.append(ids)
             self.send_translation(h,[{'id':i,'vi':VI[i]} for i in ids])
-        with LocalServer(respond) as server,tempfile.TemporaryDirectory() as temp:
+        with LocalServer(respond) as server, patch('gemini_backend.API_URL', server.url + '/v1beta'), tempfile.TemporaryDirectory() as temp:
             window=self.window(server,temp)
             try:
                 def first_complete(text):
@@ -106,7 +128,7 @@ class AppOllamaTests(unittest.TestCase):
                         self.assertTrue(window.auto_paused)
                         self.assertFalse(window.next_batch_timer.isActive())
                         QTimer.singleShot(50,window.toggle_pause)
-                window.ollama.translated.connect(first_complete)
+                window.gemini.translated.connect(first_complete)
                 notices,failures=self.run_session(window)
                 self.assertEqual(failures,[],window.log_text.toPlainText())
                 self.assertEqual(len(notices),1)
@@ -123,14 +145,11 @@ class AppOllamaTests(unittest.TestCase):
     def test_retries_only_invalid_cue_and_stops_after_two_retries(self):
         batches=[]
         def respond(h,p,d):
-            if p=='/api/show':
-                LocalServer.json(h,{})
-                return
-            payload=json.loads(d['messages'][0]['content'].split('DỮ LIỆU JSON:\n')[1])
+            payload=json.loads(d['contents'][0]['parts'][0]['text'].split('DỮ LIỆU JSON:\n')[1])
             ids=[row['id'] for row in payload]
             batches.append(ids)
             self.send_translation(h,[{'id':i,'vi':'Sai số dòng' if i==2 else VI[i]} for i in ids])
-        with LocalServer(respond) as server,tempfile.TemporaryDirectory() as temp:
+        with LocalServer(respond) as server, patch('gemini_backend.API_URL', server.url + '/v1beta'), tempfile.TemporaryDirectory() as temp:
             window=self.window(server,temp)
             try:
                 notices,failures=self.run_session(window)
@@ -146,27 +165,24 @@ class AppOllamaTests(unittest.TestCase):
     def test_stop_aborts_inflight_reply_and_restart_sends_only_missing(self):
         batches=[]
         def respond(h,p,d):
-            if p=='/api/show':
-                LocalServer.json(h,{})
-                return
-            payload=json.loads(d['messages'][0]['content'].split('DỮ LIỆU JSON:\n')[1])
+            payload=json.loads(d['contents'][0]['parts'][0]['text'].split('DỮ LIỆU JSON:\n')[1])
             ids=[row['id'] for row in payload]
             batches.append(ids)
             if len(batches)==1:
-                LocalServer.stream(h,[{'message':{'content':'partial'},'done':False},
-                    {'message':{'content':'LATE'},'done':True}],delay=.2)
+                import time
+                time.sleep(.2)
+                self.send_translation(h, [{'id': i, 'vi': 'OLD'} for i in ids])
             else:
                 self.send_translation(h,[{'id':i,'vi':VI[i]} for i in ids])
-        with LocalServer(respond) as server,tempfile.TemporaryDirectory() as temp:
+        with LocalServer(respond) as server, patch('gemini_backend.API_URL', server.url + '/v1beta'), tempfile.TemporaryDirectory() as temp:
             window=self.window(server,temp)
             window.model.cues[0].translation=VI[1]
             try:
-                def stopped(_):
-                    window.ollama.translation_progress.disconnect(stopped)
+                def stopped():
                     window.stop_translation()
-                    self.assertFalse(window.ollama.busy)
+                    self.assertFalse(window.gemini.busy)
                     QTimer.singleShot(10,window.start_translation)
-                window.ollama.translation_progress.connect(stopped)
+                QTimer.singleShot(75,stopped)
                 notices,failures=self.run_session(window)
                 self.assertEqual(failures,[])
                 self.assertEqual(len(notices),1)

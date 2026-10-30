@@ -1,4 +1,4 @@
-"""SRT CUỐN CHIẾU - local Ollama and optional ChatGPT Web.
+"""SRT CUỐN CHIẾU - ChatGPT Web and Gemini Developer API.
 Windows: run_windows.bat | Cross-platform: python app.py
 The connection test checks that ChatGPT Web and its editor are ready.
 """
@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -15,7 +16,7 @@ from PySide6.QtGui import QColor, QBrush, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QSpinBox, QSplitter, QTableView, QVBoxLayout,
     QWidget,
 )
@@ -33,7 +34,7 @@ from srt_engine import (
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js, REVEAL_EDITOR_JS
 from native_chatgpt_bridge import WebBridge, load_web_bridge, NATIVE_SEND_ACK_JS, RESUME_NATIVE_WAIT_JS
 from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
-from ollama_backend import OllamaClient, DEFAULT_MODEL, local_model_name
+from gemini_backend import GeminiClient, DEFAULT_MODEL, api_key, model_name
 
 WEB_BRIDGE = WebBridge()
 _native_checked = False
@@ -116,20 +117,18 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self, backend=None):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT v1.8.0 — Ollama cục bộ | ChatGPT Web')
+        self.setWindowTitle('DỊCH SRT v1.9.0 — ChatGPT Web | Gemini API')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
         self.settings = QSettings('SRT-Cuon-Chieu', 'SRT-Cuon-Chieu')
         self._remember_backend = backend is None
-        self._initial_backend = backend or self.settings.value('translation_backend', 'ollama', type=str)
-        self.ollama = OllamaClient(self)
-        self.ollama.models_ready.connect(self._ollama_models_ready)
-        self.ollama.pull_progress.connect(self._ollama_pull_progress)
-        self.ollama.model_pulled.connect(self._ollama_model_pulled)
-        self.ollama.translation_progress.connect(self._ollama_translation_progress)
-        self.ollama.translated.connect(self._on_ollama_response)
-        self.ollama.failed.connect(self._ollama_failed)
+        self._initial_backend = backend or self.settings.value('translation_backend', 'web', type=str)
+        self.gemini = GeminiClient(self)
+        self.gemini.models_ready.connect(self._gemini_models_ready)
+        self.gemini.translated.connect(self._on_gemini_response)
+        self.gemini.failed.connect(self._gemini_failed)
+        self.auto_api_key = ''
         self.prompt = self.settings.value('prompt', DEFAULT_PROMPT, type=str) or DEFAULT_PROMPT
         self.web_batch: list[int] = []
         self._web_loaded = False
@@ -167,7 +166,7 @@ class App(QMainWindow):
         self._build_ui()
         self._style()
         self._on_backend_changed()
-        self.log('SRT v1.8.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT v1.9.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -186,7 +185,7 @@ class App(QMainWindow):
 
         top = QHBoxLayout()
         branding = QVBoxLayout()
-        heading = QLabel('DỊCH SRT — OLLAMA & CHATGPT WEB')
+        heading = QLabel('DỊCH SRT — CHATGPT WEB & GEMINI API')
         heading.setObjectName('heading')
         branding.addWidget(heading)
         note = QLabel('Chuẩn hóa JSON đầu vào/đầu ra · Dịch cuốn chiếu · Khóa ID và thời gian')
@@ -279,35 +278,40 @@ class App(QMainWindow):
         backend_group = QGroupBox('3. CHỌN BỘ DỊCH')
         backend_layout = QVBoxLayout(backend_group)
         self.backend_box = QComboBox()
-        self.backend_box.addItem('Ollama — chạy trên máy, không đăng nhập', 'ollama')
         self.backend_box.addItem('ChatGPT Web', 'web')
-        self.backend_box.setCurrentIndex(1 if self._initial_backend == 'web' else 0)
+        self.backend_box.addItem('Gemini API — key Google AI Studio', 'gemini')
+        self.backend_box.setCurrentIndex(1 if self._initial_backend == 'gemini' else 0)
         backend_layout.addWidget(self.backend_box)
-        self.ollama_controls = QWidget()
-        ollama_layout = QVBoxLayout(self.ollama_controls)
-        ollama_layout.setContentsMargins(0, 0, 0, 0)
-        local_note = QLabel('Cài và mở Ollama trước. Tải mô hình một lần (vài GB), sau đó dịch trên máy. '
-                            'qwen3:4b là lựa chọn khởi đầu; tốc độ phụ thuộc RAM và GPU.')
-        local_note.setWordWrap(True)
-        ollama_layout.addWidget(local_note)
-        self.ollama_model = QComboBox()
-        self.ollama_model.setEditable(True)
-        self.ollama_model.addItem(self.settings.value('ollama_model', DEFAULT_MODEL, type=str) or DEFAULT_MODEL)
-        ollama_layout.addWidget(QLabel('Mô hình cục bộ:'))
-        ollama_layout.addWidget(self.ollama_model)
-        self.ollama_test_btn = self._button('Kiểm tra Ollama / Đọc mô hình đã cài', self.check_ollama, 'light')
-        self.ollama_pull_btn = self._button('Tải mô hình đã chọn (cần Internet)', self.pull_ollama_model)
-        self.ollama_cancel_btn = self._button('Dừng Ollama', self.cancel_ollama)
-        self.ollama_cancel_btn.setEnabled(False)
-        ollama_layout.addWidget(self.ollama_test_btn)
-        ollama_layout.addWidget(self.ollama_pull_btn)
-        ollama_layout.addWidget(self.ollama_cancel_btn)
-        ollama_layout.addWidget(self._button('Cài Ollama cho Windows',
-            lambda: QDesktopServices.openUrl(QUrl('https://ollama.com/download/windows'))))
-        self.ollama_status = QLabel('Chưa kiểm tra Ollama. Địa chỉ: 127.0.0.1:11434')
-        self.ollama_status.setWordWrap(True)
-        ollama_layout.addWidget(self.ollama_status)
-        backend_layout.addWidget(self.ollama_controls)
+        self.gemini_controls = QWidget()
+        gemini_layout = QVBoxLayout(self.gemini_controls)
+        gemini_layout.setContentsMargins(0, 0, 0, 0)
+        api_note = QLabel('Dùng API key từ Google AI Studio. Free tier có hạn mức theo dự án/mô hình; '
+                          'hết quota thì dừng và giữ tiến độ. Phụ đề được gửi tới Google. '
+                          'Nếu dự án bật thanh toán, yêu cầu có thể tính phí theo cấu hình của Google.')
+        api_note.setWordWrap(True)
+        gemini_layout.addWidget(api_note)
+        self.gemini_key = QLineEdit()
+        self.gemini_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gemini_key.setPlaceholderText('Dán Gemini API key (chỉ giữ trong phiên này)')
+        self.gemini_key.setText(os.environ.get('GEMINI_API_KEY', ''))
+        gemini_layout.addWidget(QLabel('Gemini API key:'))
+        gemini_layout.addWidget(self.gemini_key)
+        self.gemini_model = QComboBox()
+        self.gemini_model.setEditable(True)
+        self.gemini_model.addItem(self.settings.value('gemini_model', DEFAULT_MODEL, type=str) or DEFAULT_MODEL)
+        gemini_layout.addWidget(QLabel('Mô hình (kiểm tra quota free tier trong AI Studio):'))
+        gemini_layout.addWidget(self.gemini_model)
+        self.gemini_test_btn = self._button('Kiểm tra key / Đọc mô hình Gemini', self.check_gemini, 'light')
+        self.gemini_cancel_btn = self._button('Dừng Gemini', self.cancel_gemini)
+        self.gemini_cancel_btn.setEnabled(False)
+        gemini_layout.addWidget(self.gemini_test_btn)
+        gemini_layout.addWidget(self.gemini_cancel_btn)
+        gemini_layout.addWidget(self._button('Lấy API key tại Google AI Studio',
+            lambda: QDesktopServices.openUrl(QUrl('https://aistudio.google.com/apikey'))))
+        self.gemini_status = QLabel('Chưa kiểm tra Gemini. Key không được ghi vào cấu hình hay nhật ký.')
+        self.gemini_status.setWordWrap(True)
+        gemini_layout.addWidget(self.gemini_status)
+        backend_layout.addWidget(self.gemini_controls)
         self.web_connect_controls = QWidget()
         web_connect_layout = QVBoxLayout(self.web_connect_controls)
         web_connect_layout.setContentsMargins(0, 0, 0, 0)
@@ -421,7 +425,7 @@ class App(QMainWindow):
             QGroupBox { background: #ffffff; border: 1px solid #d7dfe4; margin-top: 15px;
                         padding-top: 10px; font-weight: 600; border-radius: 4px; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; top: 0px; padding: 1px 3px; }
-            QPlainTextEdit, QComboBox, QSpinBox { border: 1px solid #becbd5; border-radius: 3px;
+            QPlainTextEdit, QLineEdit, QComboBox, QSpinBox { border: 1px solid #becbd5; border-radius: 3px;
                         background: white; padding: 5px; }
             QPushButton { background: #e9eff2; border: 1px solid #aabdc8; border-radius: 3px;
                           padding: 6px 9px; font-weight: 600; }
@@ -443,7 +447,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT v1.8.0\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT v1.9.0\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -564,38 +568,38 @@ class App(QMainWindow):
         self.connection_label.setText(message)
         self.connection_label.setStyleSheet(f'color: {color}; font-weight: 700;')
 
-    def _uses_ollama(self):
-        return self.backend_box.currentData() == 'ollama'
+    def _uses_gemini(self):
+        return self.backend_box.currentData() == 'gemini'
 
     def _on_backend_changed(self):
         if self.auto_session:
             self.stop_translation()
-        self.ollama.cancel()
+        self.gemini.cancel()
         self._end_connection_test()
         self._connection_state = 'idle'
-        local = self._uses_ollama()
+        using_api = self._uses_gemini()
         if self._remember_backend:
             self.settings.setValue('translation_backend', self.backend_box.currentData())
-        self.ollama_controls.setVisible(local)
-        self.web_connect_controls.setVisible(not local)
-        self.web_btn.setVisible(not local)
-        self.auto_recover_checkbox.setVisible(not local)
-        self.connect_btn.setText('⚡ Kiểm tra Ollama' if local else '⚡ Mở ChatGPT Web')
-        self.batch_spin.setRange(1, 40 if local else 150)
-        self.batch_spin.setValue(8 if local else 20)
-        self.timeout_spin.setRange(30 if local else 15, 1800 if local else 300)
-        self.timeout_spin.setValue(600 if local else 90)
-        self.delay_spin.setValue(0 if local else 3)
-        if local:
+        self.gemini_controls.setVisible(using_api)
+        self.web_connect_controls.setVisible(not using_api)
+        self.web_btn.setVisible(not using_api)
+        self.auto_recover_checkbox.setVisible(not using_api)
+        self.connect_btn.setText('⚡ Kiểm tra Gemini' if using_api else '⚡ Mở ChatGPT Web')
+        self.batch_spin.setRange(1, 150)
+        self.batch_spin.setValue(20)
+        self.timeout_spin.setRange(15, 600 if using_api else 300)
+        self.timeout_spin.setValue(120 if using_api else 90)
+        self.delay_spin.setValue(6 if using_api else 3)
+        if using_api:
             self.web_panel.hide()
             self.web_btn.setText('🌐 Hiện Web')
             self.splitter.setSizes([950, 490, 0])
-            self._status('● Ollama cục bộ — chưa kiểm tra')
-            self.log('Bộ dịch: Ollama trên máy. Phụ đề không gửi tới ChatGPT; không dùng module ai_chatgpt.')
+            self._status('● Gemini API — chưa kiểm tra')
+            self.log('Bộ dịch: Gemini API. Free tier theo quota của Google AI Studio; không tự thử lại khi lỗi API.')
         else:
             self._status('● Chưa kiểm tra ChatGPT Web')
             self.log('Bộ dịch: ChatGPT Web. Hạn mức của ChatGPT vẫn áp dụng.')
-        self._update_ollama_controls()
+        self._update_gemini_controls()
 
     def _ensure_web_bridge(self):
         global WEB_BRIDGE, PROBE_JS, READ_LATEST_RESPONSE_JS, _native_checked
@@ -606,82 +610,62 @@ class App(QMainWindow):
             _native_checked = True
             self.log(WEB_BRIDGE.status)
 
-    def _update_ollama_controls(self):
-        available = not self.ollama.busy and not self.auto_session
+    def _update_gemini_controls(self):
+        available = not self.gemini.busy and not self.auto_session
         self.backend_box.setEnabled(available)
-        self.ollama_model.setEnabled(available)
-        self.ollama_test_btn.setEnabled(available)
-        self.ollama_pull_btn.setEnabled(available)
-        self.ollama_cancel_btn.setEnabled(self.ollama.busy or (self.auto_session and self._uses_ollama()))
-        if self._uses_ollama():
+        self.gemini_key.setEnabled(available)
+        self.gemini_model.setEnabled(available)
+        self.gemini_test_btn.setEnabled(available)
+        self.gemini_cancel_btn.setEnabled(self.gemini.busy or (self.auto_session and self._uses_gemini()))
+        if self._uses_gemini():
             self.connect_btn.setEnabled(available)
             self.start_btn.setEnabled(available)
 
-    def check_ollama(self):
-        if self.auto_session or self.ollama.busy:
-            return
-        self.ollama_status.setText('Đang kiểm tra Ollama trên máy…')
-        self._status('◌ Đang kiểm tra Ollama…', '#ab7700')
-        self.ollama.refresh_models()
-        self._update_ollama_controls()
-
-    def _ollama_models_ready(self, names):
-        current = self.ollama_model.currentText().strip() or DEFAULT_MODEL
-        self.ollama_model.clear()
-        self.ollama_model.addItems(names or [current])
-        self.ollama_model.setCurrentText(current if current in names or not names else names[0])
-        message = (f'Ollama đã kết nối; có {len(names)} mô hình cục bộ. Chọn mô hình rồi bấm Bắt đầu.' if names else
-                   'Ollama đã kết nối nhưng chưa có mô hình cục bộ. Bấm “Tải mô hình đã chọn”.')
-        self.ollama_status.setText(message)
-        self._status('● Ollama đã kết nối', '#168b50')
-        self.log(message)
-        self._update_ollama_controls()
-
-    def pull_ollama_model(self):
-        if self.auto_session or self.ollama.busy:
+    def check_gemini(self):
+        if self.auto_session or self.gemini.busy:
             return
         try:
-            model = local_model_name(self.ollama_model.currentText())
-            self.ollama.pull_model(model)
+            self.gemini.refresh_models(self.gemini_key.text())
         except ValueError as error:
-            self._ollama_failed(str(error))
+            self._gemini_failed(str(error))
             return
-        self.settings.setValue('ollama_model', model)
-        self.ollama_status.setText(f'Đang tải {model}; lần đầu cần Internet và dung lượng vài GB…')
-        self.log(f'Tải mô hình Ollama: {model}. Có thể bấm Dừng Ollama; lần sau tải tiếp phần còn thiếu.')
-        self._update_ollama_controls()
+        self.gemini_status.setText('Đang kiểm tra key và đọc mô hình từ Google…')
+        self._status('◌ Đang kiểm tra Gemini…', '#ab7700')
+        self._update_gemini_controls()
 
-    def _ollama_pull_progress(self, message):
-        self.ollama_status.setText(message)
+    def _gemini_models_ready(self, names):
+        current = self.gemini_model.currentText().strip() or DEFAULT_MODEL
+        self.gemini_model.clear()
+        self.gemini_model.addItems(names or [current])
+        self.gemini_model.setCurrentText(current if current in names or not names else names[0])
+        message = (f'Key kết nối được; tìm thấy {len(names)} mô hình sinh văn bản. '
+                   'Danh sách này không xác nhận quota miễn phí; kiểm tra hạn mức trong AI Studio.' if names else
+                   'Key kết nối được nhưng chưa thấy mô hình Gemini sinh văn bản phù hợp.')
+        self.gemini_status.setText(message)
+        self._status('● Gemini đã kết nối' if names else '● Chưa có mô hình Gemini phù hợp',
+                     '#168b50' if names else '#ab7700')
+        self.log(message)
+        self._update_gemini_controls()
 
-    def _ollama_model_pulled(self, model):
-        self.log(f'✓ Đã tải mô hình {model}.')
-        self.check_ollama()
-
-    def cancel_ollama(self):
-        if self.auto_session and self._uses_ollama():
+    def cancel_gemini(self):
+        if self.auto_session and self._uses_gemini():
             self.stop_translation()
         else:
-            self.ollama.cancel()
-            self._update_ollama_controls()
-        self.ollama_status.setText('Đã dừng Ollama. Tiến độ đã nhận vẫn được giữ.')
+            self.gemini.cancel()
+            self._update_gemini_controls()
+        self.gemini_status.setText('Đã dừng Gemini. Tiến độ đã nhận vẫn được giữ.')
 
-    def _ollama_failed(self, message):
-        self.ollama_status.setText(message)
-        self._status('● Ollama chưa sẵn sàng', '#c43140')
-        if self.auto_session and self._uses_ollama():
+    def _gemini_failed(self, message):
+        self.gemini_status.setText(message)
+        self._status('● Gemini chưa sẵn sàng', '#c43140')
+        if self.auto_session and self._uses_gemini():
             self._auto_failed(message)
         else:
             self.log('⚠ ' + message)
-            self._update_ollama_controls()
+            self._update_gemini_controls()
 
-    def _ollama_translation_progress(self, chars):
-        if self.auto_session and self._uses_ollama():
-            self.ollama_status.setText(f'Ollama đang dịch lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}: '
-                                       f'{chars} ký tự. Lần nạp mô hình đầu tiên có thể lâu hơn.')
-
-    def _on_ollama_response(self, text):
-        if not self.auto_session or not self._uses_ollama() or not self.batch_waiting_for_json:
+    def _on_gemini_response(self, text):
+        if not self.auto_session or not self._uses_gemini() or not self.batch_waiting_for_json:
             return
         try:
             parsed = extract_json(text)
@@ -691,15 +675,15 @@ class App(QMainWindow):
                 parsed = extract_json(text)
             except (ValueError, TypeError):
                 parsed = {'items': []}
-            self.log('⚠ Kiểm tra bản dịch Ollama: ' + str(error)[:300])
+            self.log('⚠ Kiểm tra bản dịch Gemini: ' + str(error)[:300])
             self._accept_partial_response(parsed)
             return
         self._accept_batch(mapping)
 
     def connect_and_open(self):
         """Check that ChatGPT Web and its chat editor are ready."""
-        if self._uses_ollama():
-            self.check_ollama()
+        if self._uses_gemini():
+            self.check_gemini()
             return
         self._ensure_web_bridge()
         if not WEB_AVAILABLE or self.web_view is None:
@@ -846,7 +830,7 @@ class App(QMainWindow):
         if not self.model.cues:
             self.show_notice('Hãy mở file SRT trước.')
             return
-        if not self._uses_ollama() and (not WEB_AVAILABLE or self.web_view is None):
+        if not self._uses_gemini() and (not WEB_AVAILABLE or self.web_view is None):
             self.show_notice('Máy thiếu QtWebEngine, không thể dịch tự động.')
             return
         if self.auto_session:
@@ -855,16 +839,18 @@ class App(QMainWindow):
         if not self._missing():
             self.show_notice('Tất cả dòng đã có bản dịch.')
             return
-        if self._uses_ollama():
-            if self.ollama.busy:
-                self.show_notice('Ollama đang kiểm tra hoặc tải mô hình. Chờ hoàn tất trước khi dịch.')
+        if self._uses_gemini():
+            if self.gemini.busy:
+                self.show_notice('Gemini đang kiểm tra key. Chờ hoàn tất trước khi dịch.')
                 return
             try:
-                self.auto_local_model = local_model_name(self.ollama_model.currentText())
+                self.auto_api_key = api_key(self.gemini_key.text())
+                self.auto_api_model = model_name(self.gemini_model.currentText())
             except ValueError as error:
+                self.auto_api_key = ''
                 self.show_notice(str(error))
                 return
-            self.settings.setValue('ollama_model', self.auto_local_model)
+            self.settings.setValue('gemini_model', self.auto_api_model)
         else:
             self._ensure_web_bridge()
         self.auto_retries = {}
@@ -877,10 +863,10 @@ class App(QMainWindow):
         self.pause_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
         self.open_btn.setEnabled(False)
-        self._update_ollama_controls()
-        if not self._uses_ollama() and not self.web_panel.isVisible():
+        self._update_gemini_controls()
+        if not self._uses_gemini() and not self.web_panel.isVisible():
             self.toggle_web()
-        engine = 'Ollama ' + self.auto_local_model if self._uses_ollama() else 'ChatGPT Web'
+        engine = 'Gemini ' + self.auto_api_model if self._uses_gemini() else 'ChatGPT Web'
         self.log(f'Bắt đầu dịch bằng {engine}: mỗi lô {self.batch_spin.value()} dòng.')
         self._queue_next_auto_batch()
 
@@ -898,13 +884,6 @@ class App(QMainWindow):
         self.auto_received = None
         size = 1 if self._missing()[0].number in self.auto_retries else self.batch_spin.value()
         self.auto_batch = self._missing()[:size]
-        if self._uses_ollama():
-            # Keep source and output within the local model's context window.
-            while len(self.auto_batch) > 1 and len(make_batch_prompt(self.auto_batch, self.prompt)) > 6000:
-                self.auto_batch.pop()
-            if len(make_batch_prompt(self.auto_batch, self.prompt)) > 6000:
-                self._auto_failed(f'ID {self.auto_batch[0].number} hoặc prompt quá dài cho mô hình cục bộ. Rút ngắn prompt hoặc chia nội dung phụ đề này.')
-                return
         self.batch_waiting_for_json = True
         prompt = make_batch_prompt(self.auto_batch, self.prompt)
         self.auto_deadline = time.monotonic() + self.timeout_spin.value()
@@ -912,11 +891,12 @@ class App(QMainWindow):
         self.auto_last_error = ''
         self.auto_editor_deadline = time.monotonic() + self.timeout_spin.value()
         self.auto_editor_wait_logged = False
-        if self._uses_ollama():
-            self.ollama_status.setText(f'Đang nạp mô hình / dịch lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
-            self.log(f'Đang dịch cục bộ lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}.')
+        if self._uses_gemini():
+            self.gemini_status.setText(f'Gemini đang dịch lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
+            self.log(f'Đang gửi Gemini lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}.')
             try:
-                self.ollama.translate(self.auto_local_model, self.auto_batch, self.prompt, self.timeout_spin.value())
+                self.gemini.translate(self.auto_api_key, self.auto_api_model, self.auto_batch,
+                                      self.prompt, self.timeout_spin.value())
             except ValueError as error:
                 self._auto_failed(str(error))
             return
@@ -1298,8 +1278,8 @@ class App(QMainWindow):
         self.apply_translations(mapping)
         self.log(f'✓ Đã nhận tự động {len(mapping)} ID.')
         self.web_status.setText(f'Đã cập nhật {len(mapping)} dòng vào bảng dịch.')
-        if self._uses_ollama():
-            self.ollama_status.setText(f'Đã lưu {len(mapping)} ID. Còn {len(self._missing())} ID chưa dịch.')
+        if self._uses_gemini():
+            self.gemini_status.setText(f'Đã lưu {len(mapping)} ID. Còn {len(self._missing())} ID chưa dịch.')
         if any(self.auto_retries.get(c.number, 0) > 2 for c in self.auto_batch if c.number not in mapping):
             self._auto_failed('Phản hồi vẫn sai sau 2 lần thử lại. ' + '; '.join(errors[:3]))
             return
@@ -1349,7 +1329,8 @@ class App(QMainWindow):
                 self._queue_next_auto_batch()
 
     def stop_translation(self):
-        self.ollama.cancel()
+        self.gemini.cancel()
+        self.auto_api_key = ''
         self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()
@@ -1365,14 +1346,15 @@ class App(QMainWindow):
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
-        self._update_ollama_controls()
+        self._update_gemini_controls()
         self.pause_btn.setText('⏸ TẠM DỪNG')
         self._save_checkpoint()
         self.log('■ Đã kết thúc phiên. Các ID đã dịch vẫn được lưu lại.')
 
 
     def closeEvent(self, event):
-        self.ollama.cancel()
+        self.gemini.cancel()
+        self.auto_api_key = ''
         self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()
