@@ -115,3 +115,5 @@ Trước mỗi lô, chờ editor theo thời gian chờ Web đã đặt, kiểm 
 Để ứng dụng mở nếu muốn tự tiếp tục. Đến hạn, kiểm tra lại ô chat và chỉ dịch các ID còn thiếu. Nếu dịch vụ vẫn chưa cho gửi hoặc đưa ra giờ chờ mới, ứng dụng tiếp tục xử lý theo thông báo thực tế; đến giờ không bảo đảm dịch vụ đã sẵn sàng. Bấm Dừng hoặc đóng ứng dụng sẽ hủy tự tiếp tục. Nếu không đọc được giờ, ứng dụng dừng và yêu cầu xem thông báo thay vì đoán thời gian.
 
 Đây là cơ chế chờ theo điều kiện dịch vụ, không phải dùng ChatGPT không giới hạn. Không đổi IP, tài khoản hoặc phiên để né giới hạn, không tự vượt xác minh. Kiểm thử cục bộ gồm giờ AM/PM, thông báo đã hết hạn, qua nửa đêm, nhận diện DOM thật, không nhầm lời người dùng/khối mã, không gửi trong lúc chờ và tiếp tục khi đến hạn.
+
+Thông báo yêu cầu chờ có thể nằm bên trong form soạn chat. Bộ nhận diện vẫn đọc phần thông báo này, đồng thời loại nội dung textarea/contenteditable để không nhầm văn bản đang nhập với yêu cầu của dịch vụ.

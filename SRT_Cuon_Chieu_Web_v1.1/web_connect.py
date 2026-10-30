@@ -10,7 +10,7 @@ _SERVICE_LIMIT_HELPER = r"""
   const serviceLimit = () => {
     if (!document.body) return null;
     const copy = document.body.cloneNode(true);
-    copy.querySelectorAll('script, style, form, textarea, [contenteditable], pre, code, ' +
+    copy.querySelectorAll('script, style, textarea, [contenteditable], pre, code, ' +
       '[data-message-author-role="user"], [data-turn="user"], [hidden], [aria-hidden="true"]')
       .forEach(el => el.remove());
     const text = (copy.textContent || '').replace(/\s+/g, ' ');

@@ -451,6 +451,7 @@ button.onclick = () => {
         clock = datetime.fromtimestamp(time.time()+120).strftime('%I:%M %p')
         message = "We're doing a quick check to keep ChatGPT reliable. Try again after " + clock + '.'
         cases = [('<p role="alert">'+message+'</p>',True),
+                 ('<form><p>'+message+'</p><textarea></textarea></form>',True),
                  ('<div data-turn="user">'+message+'</div>',False),
                  ('<pre>'+message+'</pre>',False),
                  ('<p hidden>'+message+'</p>',False)]
