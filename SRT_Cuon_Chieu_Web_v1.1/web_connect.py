@@ -6,6 +6,28 @@ No login automation, CAPTCHA solving, or rate-limit bypass is used.
 Since chatgpt.com can change its HTML, this is best effort only.
 """
 
+# Connection, preparation and send must agree on the actual writable editor.
+_EDITOR_HELPER = r"""
+  const normalizeDraft = text => (text || '').replace(/\r\n?/g, '\n').replace(/\n+/g, '\n').trim();
+  const findChatEditor = () => {
+    const selectors = ['#prompt-textarea', 'textarea[name="prompt-textarea"]',
+      '[data-testid="prompt-textarea"]', 'textarea#mobile-composer-prompt',
+      '[contenteditable="true"][data-lexical-editor="true"]', '[role="textbox"]', '[contenteditable]'];
+    for (const selector of selectors) {
+      for (const candidate of document.querySelectorAll(selector)) {
+        const nodes = candidate.matches('textarea, [contenteditable]') ? [candidate] :
+          [...candidate.querySelectorAll('textarea, [contenteditable]')];
+        for (const node of nodes) {
+          if (node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden' &&
+              !node.disabled && !node.readOnly &&
+              (node.tagName.toLowerCase() === 'textarea' || node.isContentEditable)) return node;
+        }
+      }
+    }
+    return null;
+  };
+"""
+
 # Both probes use the same canonical assistant nodes in document order.
 _DOM_HELPERS = r"""
   const shown = el => !!el && !!el.getClientRects().length &&
@@ -107,12 +129,10 @@ PROBE_JS = r"""(() => {
     return {site:false, editor:false, assistantCount:0};
   }
 """ + _DOM_HELPERS + r"""
-  const editor = [...document.querySelectorAll(
-    '#prompt-textarea, textarea[name="prompt-textarea"], [data-testid="prompt-textarea"], ' +
-    'textarea#mobile-composer-prompt, [contenteditable="true"][data-lexical-editor="true"]'
-  )].find(el => shown(el) && !el.disabled && el.getAttribute('contenteditable') !== 'false');
-  return {site:true, editor:!!editor, assistantCount:responseCount, lastText};
-})()"""
+  /*EDITOR_HELPER*/
+  const editor = findChatEditor();
+  return {site:true, editor:!!editor, assistantCount:responseCount, lastText, editorKind:editor ? editor.tagName.toLowerCase() : ''};
+})()""".replace("/*EDITOR_HELPER*/", _EDITOR_HELPER)
 
 def make_send_message_js(message: str) -> str:
     """Return JavaScript that enters and sends one message in the current chat."""
@@ -123,12 +143,8 @@ def make_send_message_js(message: str) -> str:
   }
   const text = %s;
   window.__srtOutboundPrompt = text;
-  const sels = ['#prompt-textarea','textarea[name="prompt-textarea"]',
-                '[data-testid="prompt-textarea"]','textarea#mobile-composer-prompt',
-                '[contenteditable="true"][data-lexical-editor="true"]',
-                '[contenteditable="true"]'];
-  const editor = sels.flatMap(s => [...document.querySelectorAll(s)])
-    .find(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+  /*EDITOR_HELPER*/
+  const editor = findChatEditor();
   if (!editor) return {ok:false, why:'Không tìm thấy ô chat'};
   editor.focus();
   if (editor.tagName.toLowerCase() === 'textarea') {
@@ -148,8 +164,8 @@ def make_send_message_js(message: str) -> str:
     }
   }
   const actual = editor.tagName.toLowerCase() === 'textarea' ? editor.value : editor.innerText;
-  return {ok:actual.trim() === text.trim(), prepared:true, why:'Không điền được nội dung lô vào ô chat.'};
-})()""" % json.dumps(message, ensure_ascii=False)
+  return {ok:normalizeDraft(actual) === normalizeDraft(text), prepared:true, why:'Không điền được nội dung lô vào ô chat.'};
+})()""".replace("/*EDITOR_HELPER*/", _EDITOR_HELPER) % json.dumps(message, ensure_ascii=False)
 
 # React updates send-button state after the input event. Click in a separate
 # invocation, rather than pretending a synthetic Enter was accepted.
@@ -158,11 +174,11 @@ SEND_MESSAGE_JS = r"""(() => {
     return {ok:false, why:'Trang hiện tại không phải ChatGPT.'};
   }
   const shown = el => el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
-  const editor = [...document.querySelectorAll('#prompt-textarea, textarea[name="prompt-textarea"], ' +
-    '[data-testid="prompt-textarea"], textarea#mobile-composer-prompt, [contenteditable="true"]')].find(shown);
+  /*EDITOR_HELPER*/
+  const editor = findChatEditor();
   if (!editor) return {ok:false, retryable:false, why:'Không còn ô chat trên trang.'};
   const draft = editor.tagName.toLowerCase() === 'textarea' ? editor.value : editor.innerText;
-  if (!draft || draft.trim() !== (window.__srtOutboundPrompt || '').trim()) {
+  if (!draft || normalizeDraft(draft) !== normalizeDraft(window.__srtOutboundPrompt)) {
     return {ok:false, retryable:false, why:'Nội dung ô chat đã thay đổi. Chưa bấm gửi để tránh gửi nhầm hoặc gửi trùng.'};
   }
   if ([...document.querySelectorAll('[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Dừng"]')].some(shown)) {
@@ -179,7 +195,7 @@ SEND_MESSAGE_JS = r"""(() => {
     why:visible.length ? 'Nút gửi đang bị vô hiệu hóa.' : 'Chưa tìm thấy nút gửi của ô chat.'};
   button.click();
   return {ok:true};
-})()"""
+})()""".replace("/*EDITOR_HELPER*/", _EDITOR_HELPER)
 
 READ_LATEST_RESPONSE_JS = r"""(() => {
   if (!['chatgpt.com', 'www.chatgpt.com'].includes(location.hostname)) {

@@ -226,6 +226,12 @@ class WebBridgeTests(unittest.TestCase):
                     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_guest_page_sends_two_batches_and_populates_table(self):
+        self._assert_two_batches('<textarea id="prompt-textarea"></textarea>')
+
+    def test_generic_contenteditable_sends_two_batches(self):
+        self._assert_two_batches('<div role="textbox" contenteditable="true"></div>')
+
+    def _assert_two_batches(self, editor_markup):
         window = App()
         loop = QEventLoop()
         notices = []
@@ -249,11 +255,11 @@ class WebBridgeTests(unittest.TestCase):
             window.stop_translation()
             loop.quit()
         window._auto_failed = failed
-        html = r'''<textarea id="prompt-textarea"></textarea>
+        html = editor_markup + r'''
 <button id="composer-submit-button" disabled>Send</button><main></main>
 <script>
 let sent = 0;
-const editor = document.querySelector('textarea');
+const editor = document.querySelector('textarea, [contenteditable]');
 const button = document.querySelector('button');
 editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, sent === 0 ? 1200 : 2200));
 button.onclick = () => {
@@ -264,7 +270,8 @@ button.onclick = () => {
   content.className = 'guest-reply';
   content.textContent = JSON.stringify({items:[{id:sent, vi:sent === 1 ? 'Xin chào' : 'Tạm biệt'}]});
   turn.appendChild(content); document.querySelector('main').appendChild(turn);
-  editor.value = ''; button.disabled = true;
+  if (editor.tagName === 'TEXTAREA') editor.value = ''; else editor.textContent = '';
+  button.disabled = true;
 };
 </script>'''
         def loaded(ok):
@@ -438,6 +445,96 @@ button.onclick = () => {
             window.close()
             window.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_editor_detection_uses_writable_node_not_wrapper_or_disabled_field(self):
+        cases = [
+            ('<div id="prompt-textarea"><div contenteditable="true"></div></div>', True, 'div'),
+            ('<div role="textbox" contenteditable="plaintext-only"></div>', True, 'div'),
+            ('<textarea id="prompt-textarea" readonly></textarea>', False, ''),
+            ('<textarea id="prompt-textarea" disabled></textarea>', False, ''),
+            ('<div id="prompt-textarea" contenteditable="false"></div>', False, ''),
+            ('<div contenteditable="true" style="display:none"></div>', False, ''),
+        ]
+        for html, ready, kind in cases:
+            with self.subTest(html=html):
+                window = App()
+                loop = QEventLoop()
+                values = []
+                def received(value):
+                    values.append(value)
+                    loop.quit()
+                def loaded(ok):
+                    if ok:
+                        window._run_web_script(PROBE_JS.replace('window.location.hostname', "'chatgpt.com'"), received)
+                    else:
+                        loop.quit()
+                window.web_view.loadFinished.connect(loaded)
+                window.web_view.setHtml(html)
+                deadline = QTimer()
+                deadline.setSingleShot(True)
+                deadline.timeout.connect(loop.quit)
+                deadline.start(10000)
+                loop.exec()
+                deadline.stop()
+                try:
+                    self.assertEqual(len(values), 1)
+                    self.assertEqual(values[0]['editor'], ready)
+                    self.assertEqual(values[0]['editorKind'], kind)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_editor_wait_retries_without_sending_then_prepares_once_ready(self):
+        window = self.make_session()
+        timers, scripts = [], []
+        window._run_web_script = lambda script, callback: scripts.append((script, callback))
+        try:
+            window._queue_next_auto_batch()
+            scripts.clear()
+            with patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)):
+                window._on_batch_probe({'site':True,'editor':False}, 'prompt')
+                self.assertTrue(window.auto_session)
+                self.assertEqual(scripts, [])
+                timers.pop()()
+            self.assertEqual(scripts[0][0], PROBE_JS)
+            scripts[0][1]({'site':True,'editor':True,'assistantCount':0})
+            self.assertEqual(len(scripts), 2)
+            self.assertIn('insertText', scripts[1][0])
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_editor_wait_timeout_and_stop_never_send_a_batch(self):
+        for stop in (False, True):
+            with self.subTest(stop=stop):
+                window = self.make_session()
+                scripts, timers, failures = [], [], []
+                def failed(message):
+                    failures.append(message)
+                    window.stop_translation()
+                window._auto_failed = failed
+                window._run_web_script = lambda script, callback: scripts.append(script)
+                try:
+                    window._queue_next_auto_batch()
+                    scripts.clear()
+                    with patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)):
+                        window._on_batch_probe({'site':True,'editor':False}, 'prompt')
+                    window.auto_editor_deadline = time.monotonic() - 1
+                    if stop:
+                        window.stop_translation()
+                        timers[-1]()
+                        self.assertEqual(failures, [])
+                    else:
+                        window._on_batch_probe({'site':True,'editor':False}, 'prompt')
+                        self.assertEqual(len(failures), 1)
+                        self.assertIn('ô chat', failures[0])
+                    self.assertEqual(scripts, [])
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_send_waits_when_disabled_and_success_is_processed_once(self):
         window = self.make_session()

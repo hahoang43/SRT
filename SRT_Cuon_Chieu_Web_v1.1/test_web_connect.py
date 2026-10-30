@@ -25,7 +25,7 @@ const replies = DATA.map(data => ({
 }));
 global.location = {hostname:HOST}; global.window = {location};
 global.getComputedStyle = () => ({visibility:'visible'});
-const editor = {getClientRects:()=>[1],getAttribute:()=>null};
+const editor = {getClientRects:()=>[1],getAttribute:()=>null,tagName:'TEXTAREA',matches:()=>true};
 global.document = {querySelectorAll: selector => {
   if(['[data-testid^="conversation-turn-"]', 'main .markdown, main pre code',
       'main, [role="main"], #thread, #conversation'].includes(selector)) return [];
@@ -66,7 +66,7 @@ process.stdout.write(JSON.stringify(SCRIPT));
         fixture = r'''
 let clicked = 0;
 const shown = {getClientRects:()=>[1],getAttribute:()=>null};
-const editor = {...shown, tagName:'TEXTAREA', value:DRAFT, closest:()=>null};
+const editor = {...shown, tagName:'TEXTAREA', value:DRAFT, closest:()=>null,matches:()=>true};
 const send = {...shown, disabled:DISABLED, click:()=>clicked++};
 global.location = {hostname:'chatgpt.com'};
 global.window = {__srtOutboundPrompt:'batch'};

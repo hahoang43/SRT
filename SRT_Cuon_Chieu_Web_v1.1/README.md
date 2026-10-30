@@ -101,3 +101,9 @@ Nhật ký thực tế có trường hợp JSON chỉ xuất hiện trong một 
 Bản này kiểm tra JSON ngay khi nhìn thấy: phải đủ đúng ID của toàn bộ lô, không trùng/thừa ID, đúng kiểu dữ liệu và số dòng từng cue. Khi đạt, ứng dụng điền bảng và ghi checkpoint ngay, nhưng chưa gửi lô sau cho đến khi Web hết tạo câu trả lời. Nếu DOM mất phản hồi sau đó, tiếp tục bằng bản dịch hợp lệ đã giữ. Nút Stop đang hiển thị vẫn ngăn gửi lô mới. Dừng phiên giữ bản dịch đã lưu và xóa dữ liệu lô chờ để không dùng nhầm cho lần chạy sau.
 
 Không khôi phục từ JSON cắt dở, thiếu ID hoặc sai số dòng. Bản sửa không bảo đảm ChatGPT luôn trả lời và không thay đổi giới hạn/đăng nhập của dịch vụ. Kiểm thử tái hiện chuỗi một phản hồi đang tạo → không còn phản hồi, xác minh file checkpoint và việc tiếp tục đúng các ID chưa dịch.
+
+### v1.2.5: Đã đăng nhập nhưng báo không thấy ô chat
+
+Các bước kiểm tra kết nối, điền prompt và gửi dùng chung một bộ nhận diện editor: textarea hoặc contenteditable thực sự có thể nhập, kể cả editor không có ID hoặc nằm trong wrapper. Loại editor ẩn, disabled, readOnly và contenteditable=false. Đối chiếu nội dung bỏ qua khác biệt xuống dòng trống do trình soạn thảo HTML tạo ra, không thay đổi JSON phụ đề gửi đi.
+
+Trước mỗi lô, chờ editor theo thời gian chờ Web đã đặt, kiểm tra lại mỗi 750 ms thay vì dừng sau lần dò đầu tiên. Hết hạn thì báo chưa thấy ô chat có thể nhập, không tự suy luận cần đăng nhập. Không tự tải lại trang, mở hội thoại mới hay gửi lại lô trong lúc chờ. Bấm Dừng hủy các lượt dò còn chờ; checkpoint được giữ nguyên.

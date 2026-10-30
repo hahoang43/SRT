@@ -108,7 +108,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.2.4 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.2.5 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -143,7 +143,7 @@ class App(QMainWindow):
         self.next_batch_timer.timeout.connect(self._queue_next_auto_batch)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.2.4 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.2.5 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -378,7 +378,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.2.4\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.2.5\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -656,6 +656,8 @@ class App(QMainWindow):
         self.auto_deadline = time.monotonic() + self.timeout_spin.value()
         self.auto_hard_deadline = time.monotonic() + 900
         self.auto_last_error = ''
+        self.auto_editor_deadline = time.monotonic() + self.timeout_spin.value()
+        self.auto_editor_wait_logged = False
         self.web_status.setText(f'Đang gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
         self._run_batch_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
 
@@ -685,8 +687,22 @@ class App(QMainWindow):
     def _on_batch_probe(self, result, prompt: str):
         if not self.auto_session:
             return
+        if isinstance(result, dict) and result.get('scriptError'):
+            self._auto_failed('Không kiểm tra được ô chat: ' + str(result['scriptError']))
+            return
         if not isinstance(result, dict) or not result.get('site') or not result.get('editor'):
-            self._auto_failed('Chưa thấy ô chat sẵn sàng. Có thể dùng chế độ khách nếu ChatGPT cho phép. Nếu trang yêu cầu đăng nhập hoặc báo giới hạn, phần mềm không thể tự bỏ qua.')
+            if time.monotonic() >= self.auto_editor_deadline:
+                self._auto_failed('Hết thời gian chờ ô chat có thể nhập. Đăng nhập không bảo đảm giao diện đã sẵn sàng; kiểm tra trang đã tải xong, đóng hộp thoại trên Web hoặc xem thông báo của trang. Bản dịch đã lưu được giữ nguyên.')
+                return
+            self.web_status.setText('Đang chờ giao diện ChatGPT và ô chat sẵn sàng…')
+            if not self.auto_editor_wait_logged:
+                self.log('◌ Đang chờ ô chat có thể nhập; chưa gửi lô và chưa kết luận lỗi đăng nhập.')
+                self.auto_editor_wait_logged = True
+            generation = self.auto_generation
+            def probe_again():
+                if self.auto_session and generation == self.auto_generation:
+                    self._run_batch_script(PROBE_JS, lambda value: self._on_batch_probe(value, prompt))
+            QTimer.singleShot(750, probe_again)
             return
         self.auto_baseline = int(result.get('assistantCount') or 0)
         self.auto_baseline_text = result.get('lastText', '')
@@ -923,6 +939,9 @@ class App(QMainWindow):
 
 
     def closeEvent(self, event):
+        self.auto_generation += 1
+        self.auto_session = False
+        self.auto_send_state = 'idle'
         self.connection_timer.stop()
         self.next_batch_timer.stop()
         self._save_checkpoint()
