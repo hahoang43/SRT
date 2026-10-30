@@ -35,12 +35,69 @@ _DOM_HELPERS = r"""
     });
     assistantRows = assistantRows.filter(el => !assistantRows.some(other => other !== el && other.contains(el)));
   }
+  let fallbackText = '';
+  let fallbackMatches = 0;
+  let conversationChars = 0;
+  if (!assistantRows.length) {
+    // Some guest layouts have neither role attributes nor markdown classes.
+    // Inspect only conversation containers, excluding user/composer content.
+    // Accept complete translation objects, never prompt examples or partial JSON.
+    const roots = [...document.querySelectorAll('main, [role="main"], #thread, #conversation')];
+    const candidates = [];
+    for (const root of roots) {
+      const copy = root.cloneNode(true);
+      const compact = text => (text || '').replace(/\s/g, '');
+      const outbound = compact(window.__srtOutboundPrompt);
+      if (outbound) {
+        // Guest DOM may omit even the user-role marker. Exclude the exact
+        // message this app sent, including any valid JSON examples in it.
+        for (const el of [...copy.querySelectorAll('*')]) {
+          if (compact(el.textContent) === outbound) el.remove();
+        }
+      }
+      copy.querySelectorAll('[data-message-author-role="user"], [data-turn="user"], ' +
+        'form, textarea, [contenteditable], script, style, nav, header, [hidden], [aria-hidden="true"]')
+        .forEach(el => el.remove());
+      const raw = (copy.textContent || '').slice(-500000);
+      conversationChars = Math.max(conversationChars, raw.length);
+      const starts = /\{\s*"items"\s*:/g;
+      let match;
+      while ((match = starts.exec(raw))) {
+        let depth = 0, quoted = false, escaped = false;
+        for (let i = match.index; i < raw.length; i++) {
+          const char = raw[i];
+          if (quoted) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') quoted = false;
+          } else if (char === '"') quoted = true;
+          else if (char === '{') depth++;
+          else if (char === '}' && --depth === 0) {
+            try {
+              const value = JSON.parse(raw.slice(match.index, i + 1));
+              if (Array.isArray(value.items) && value.items.length > 0 && value.items.every(row =>
+                  Number.isInteger(row.id) && typeof row.vi === 'string' && row.vi.trim() &&
+                  !['...', '…'].includes(row.vi.trim()) && !('zh' in row))) {
+                candidates.push(JSON.stringify(value));
+              }
+            } catch (_) { /* Incomplete/malformed response is not a translation. */ }
+            starts.lastIndex = i + 1;
+            break;
+          }
+        }
+      }
+    }
+    const unique = [...new Set(candidates)];
+    fallbackMatches = unique.length;
+    fallbackText = unique[unique.length - 1] || '';
+  }
   const lastReply = assistantRows[assistantRows.length - 1];
   const replyText = el => {
     const content = el && (el.querySelector('.markdown') || el);
     return content ? (content.innerText || content.textContent || '').trim() : '';
   };
-  const lastText = replyText(lastReply);
+  const lastText = replyText(lastReply) || fallbackText;
+  const responseCount = assistantRows.length || fallbackMatches;
 
 """
 
@@ -54,7 +111,7 @@ PROBE_JS = r"""(() => {
     '#prompt-textarea, textarea[name="prompt-textarea"], [data-testid="prompt-textarea"], ' +
     'textarea#mobile-composer-prompt, [contenteditable="true"][data-lexical-editor="true"]'
   )].find(el => shown(el) && !el.disabled && el.getAttribute('contenteditable') !== 'false');
-  return {site:true, editor:!!editor, assistantCount:assistantRows.length, lastText};
+  return {site:true, editor:!!editor, assistantCount:responseCount, lastText};
 })()"""
 
 def make_send_message_js(message: str) -> str:
@@ -65,6 +122,7 @@ def make_send_message_js(message: str) -> str:
     return {ok:false, why:'Trang hiện tại không phải ChatGPT.'};
   }
   const text = %s;
+  window.__srtOutboundPrompt = text;
   const sels = ['#prompt-textarea','textarea[name="prompt-textarea"]',
                 '[data-testid="prompt-textarea"]','textarea#mobile-composer-prompt',
                 '[contenteditable="true"][data-lexical-editor="true"]',
@@ -124,11 +182,13 @@ READ_LATEST_RESPONSE_JS = r"""(() => {
     catch (_) { return false; }
   });
   const content = last && (last.querySelector('.markdown') || last);
-  const text = jsonBlock || (content ? (content.innerText || content.textContent || '').trim() : '');
+  const text = jsonBlock || (content ? (content.innerText || content.textContent || '').trim() : '') || fallbackText;
   const stopVisible = [...document.querySelectorAll(
     '[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Dừng"], ' +
     'button[title*="Stop"], button[title*="Dừng"]'
   )].some(shown);
   const generating = stopVisible || !!(last && last.querySelector('[data-is-streaming="true"], .result-streaming'));
-  return {site:true, assistantCount:assistantRows.length, text, lastText, generating, stopVisible, textLength:text.length};
+  return {site:true, assistantCount:responseCount, text, lastText, generating, stopVisible, textLength:text.length,
+    diagnostics:{turns:turns.length, roles:document.querySelectorAll('[data-message-author-role="assistant"]').length,
+      conversationChars, fallbackMatches}};
 })()"""

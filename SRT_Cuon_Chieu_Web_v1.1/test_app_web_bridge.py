@@ -142,6 +142,87 @@ class WebBridgeTests(unittest.TestCase):
             window.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
+    def test_plain_guest_conversation_without_message_selectors(self):
+        window = App()
+        loop = QEventLoop()
+        values = []
+        payload = '{"items":[{"id":1,"vi":"Chào \\"bạn\\" {mới}\\nHẹn gặp"}]}'
+        # Realistic failure: no role, turn, markdown or pre/code nodes. Include
+        # an unmarked user prompt with a valid example to detect false imports.
+        example = '{"items":[{"id":123,"vi":"Không được nhập"}]}'
+        prompt = 'Dịch phụ đề. Ví dụ: ' + example
+        html = ('<main><section>' + prompt + '</section><section>'
+                'Kết quả của bạn: <div>' + payload + '</div>Hoàn tất.</section>'
+                '<form><textarea>' + example + '</textarea></form></main>')
+        def received(value):
+            values.append(value)
+            loop.quit()
+        def loaded(ok):
+            if not ok:
+                loop.quit()
+                return
+            script = ('window.__srtOutboundPrompt = ' + json.dumps(prompt) + ';')
+            window._run_web_script('(() => {' + script + 'return true;})()', lambda _: read())
+        def read():
+            window._run_web_script(READ_LATEST_RESPONSE_JS.replace('location.hostname', "'chatgpt.com'"), received)
+        window.web_view.loadFinished.connect(loaded)
+        window.web_view.setHtml(html)
+        deadline = QTimer()
+        deadline.setSingleShot(True)
+        deadline.timeout.connect(loop.quit)
+        deadline.start(10000)
+        loop.exec()
+        deadline.stop()
+        try:
+            self.assertEqual(len(values), 1)
+            result = values[0]
+            self.assertEqual(result['assistantCount'], 1, result)
+            self.assertEqual(json.loads(result['text']), json.loads(payload))
+            self.assertEqual(result['diagnostics']['roles'], 0)
+            self.assertEqual(result['diagnostics']['turns'], 0)
+            self.assertEqual(result['diagnostics']['fallbackMatches'], 1)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_plain_guest_fallback_rejects_partial_and_prompt_examples(self):
+        cases = [
+            '<main><div>{"items":[{"id":1,"vi":"Chưa xong"}</div></main>',
+            '<main><div>{"items":[{"id":123,"vi":"..."}]}</div></main>',
+            '<main><div data-turn="user">{"items":[{"id":1,"vi":"Prompt"}]}</div></main>',
+            '<main><div>{"items":[{"id":1,"zh":"你好"}]}</div></main>',
+        ]
+        for html in cases:
+            with self.subTest(html=html):
+                window = App()
+                loop = QEventLoop()
+                values = []
+                def received(value):
+                    values.append(value)
+                    loop.quit()
+                def loaded(ok):
+                    if ok:
+                        window._run_web_script(READ_LATEST_RESPONSE_JS.replace('location.hostname', "'chatgpt.com'"), received)
+                    else:
+                        loop.quit()
+                window.web_view.loadFinished.connect(loaded)
+                window.web_view.setHtml(html)
+                deadline = QTimer()
+                deadline.setSingleShot(True)
+                deadline.timeout.connect(loop.quit)
+                deadline.start(10000)
+                loop.exec()
+                deadline.stop()
+                try:
+                    self.assertEqual(len(values), 1)
+                    self.assertEqual(values[0]['assistantCount'], 0)
+                    self.assertEqual(values[0]['text'], '')
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
     def test_guest_page_sends_two_batches_and_populates_table(self):
         window = App()
         loop = QEventLoop()
@@ -176,9 +257,9 @@ editor.addEventListener('input', () => setTimeout(() => {button.disabled = false
 button.onclick = () => {
   sent++;
   const turn = document.createElement('article');
-  turn.dataset.testid = 'conversation-turn-' + sent;
+  // Guest layout deliberately omits all role, turn and markdown selectors.
   const content = document.createElement('div');
-  content.className = 'markdown';
+  content.className = 'guest-reply';
   content.textContent = JSON.stringify({items:[{id:sent, vi:sent === 1 ? 'Xin chào' : 'Tạm biệt'}]});
   turn.appendChild(content); document.querySelector('main').appendChild(turn);
   editor.value = ''; button.disabled = true;

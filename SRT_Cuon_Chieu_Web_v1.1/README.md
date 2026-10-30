@@ -81,3 +81,9 @@ Chạy kiểm thử: `python -m unittest -v test_engine test_web_connect`.
 - Khi CSS streaming còn sót, chỉ nhận JSON đầy đủ, đúng toàn bộ lô sau 4 lần đọc ổn định và khi nút Stop không còn hiển thị. Không gửi lô mới trong khi nút Stop còn xuất hiện.
 - Nếu QtWebEngine không trả callback trong 10 giây, dừng và báo lỗi thay vì đứng vô hạn.
 - Những kiểm thử dùng HTML cục bộ không xác nhận đăng nhập hay khả năng dùng ChatGPT khách trên một máy thực tế. Khi lỗi vẫn xảy ra, cần nhật ký và phiên bản đang chạy để chẩn đoán tiếp.
+
+### v1.2.2: Web có JSON nhưng nhật ký báo 0 phản hồi
+
+Bổ sung bộ đọc dự phòng cho vùng hội thoại (`main`, `role=main`, `#thread`, `#conversation`) khi giao diện khách không có role/turn/markdown. Bộ đọc lấy đối tượng JSON dịch hoàn chỉnh, xử lý dấu ngoặc/escape trong chuỗi, loại ô soạn thảo, tin nhắn người dùng và prompt vừa gửi; không nhận JSON cắt dở hoặc ví dụ `vi:"..."`.
+
+Dòng “Cấu trúc Web” trong nhật ký cho biết số role/turn, số ký tự vùng hội thoại và số JSON dịch tìm được, không ghi toàn văn hội thoại. Nếu vẫn thấy 0 phản hồi trong v1.2.2 dù Web có JSON, gửi thêm dòng này để chẩn đoán chính xác. Đây là sửa bộ đọc giao diện, không thay đổi yêu cầu đăng nhập của ChatGPT.

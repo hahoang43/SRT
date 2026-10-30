@@ -108,7 +108,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.2.1 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.2.2 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -141,7 +141,7 @@ class App(QMainWindow):
         self.next_batch_timer.timeout.connect(self._queue_next_auto_batch)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.2.1 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.2.2 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -376,7 +376,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.2.1\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.2.2\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -687,6 +687,7 @@ class App(QMainWindow):
             return
         self.auto_baseline = int(result.get('assistantCount') or 0)
         self.auto_baseline_text = result.get('lastText', '')
+        self.auto_dom_chars = None
         self.auto_last_response = ''
         self.auto_stable_reads = 0
         self._run_batch_script(make_send_message_js(prompt), self._on_batch_prepared)
@@ -714,7 +715,7 @@ class App(QMainWindow):
         if not self.auto_session or not self.batch_waiting_for_json or self.auto_poll_busy:
             return
         if time.monotonic() >= min(self.auto_deadline, self.auto_hard_deadline):
-            self._auto_failed(self.auto_last_error or 'Không nhận được phản hồi mới hợp lệ trong thời gian chờ. Kiểm tra trang Web có yêu cầu đăng nhập hoặc báo giới hạn không.')
+            self._auto_failed(self.auto_last_error or 'Chưa đọc được bản dịch từ giao diện Web. Nếu bên phải đã có JSON, hãy gửi nhật ký (bao gồm dòng Cấu trúc Web) để kiểm tra bộ đọc; nếu trang báo giới hạn, cần xử lý yêu cầu của ChatGPT.')
             return
         self.auto_poll_busy = True
         self._run_batch_script(READ_LATEST_RESPONSE_JS, self._on_batch_response)
@@ -729,10 +730,18 @@ class App(QMainWindow):
             self._auto_failed('Không đọc được giao diện Web: ' + str(result['scriptError']))
             return
         generating = bool(result.get('generating')) if isinstance(result, dict) else True
-        summary = (count, len(text), generating)
+        diagnostics = result.get('diagnostics', {}) if isinstance(result, dict) else {}
+        chars = diagnostics.get('conversationChars') if isinstance(diagnostics, dict) else None
+        if isinstance(chars, int) and chars > 0:
+            if generating and chars != getattr(self, 'auto_dom_chars', None):
+                self.auto_deadline = time.monotonic() + self.timeout_spin.value()
+            self.auto_dom_chars = chars
+        summary = (count, len(text), generating, str(result.get('diagnostics', {})) if isinstance(result, dict) else '')
         if summary != self.auto_diagnostic:
             self.auto_diagnostic = summary
             self.log(f'Web: {count} phản hồi; {len(text)} ký tự; đang tạo: {generating}.')
+            if isinstance(result, dict) and result.get('diagnostics'):
+                self.log('Cấu trúc Web: ' + json.dumps(result['diagnostics'], ensure_ascii=False))
         changed = result.get('lastText', '') != self.auto_baseline_text if isinstance(result, dict) else False
         if (count <= self.auto_baseline and not changed) or not text:
             self.auto_last_response = ''
