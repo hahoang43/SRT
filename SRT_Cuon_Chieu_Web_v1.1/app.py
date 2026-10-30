@@ -1,4 +1,4 @@
-"""SRT CUỐN CHIẾU - ChatGPT web mode, no API key.
+"""SRT CUỐN CHIẾU - local Ollama and optional ChatGPT Web.
 Windows: run_windows.bat | Cross-platform: python app.py
 The connection test checks that ChatGPT Web and its editor are ready.
 """
@@ -31,10 +31,12 @@ from srt_engine import (
     parse_srt, read_text, restore_progress, save_progress, srt_contents,
 )
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js, REVEAL_EDITOR_JS
-from native_chatgpt_bridge import load_web_bridge, NATIVE_SEND_ACK_JS, RESUME_NATIVE_WAIT_JS
+from native_chatgpt_bridge import WebBridge, load_web_bridge, NATIVE_SEND_ACK_JS, RESUME_NATIVE_WAIT_JS
 from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
+from ollama_backend import OllamaClient, DEFAULT_MODEL, local_model_name
 
-WEB_BRIDGE = load_web_bridge()
+WEB_BRIDGE = WebBridge()
+_native_checked = False
 PROBE_JS = WEB_BRIDGE.probe_js
 READ_LATEST_RESPONSE_JS = WEB_BRIDGE.read_js
 
@@ -112,13 +114,22 @@ class CueTableModel(QAbstractTableModel):
 
 
 class App(QMainWindow):
-    def __init__(self):
+    def __init__(self, backend=None):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.7.0 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT v1.8.0 — Ollama cục bộ | ChatGPT Web')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
         self.settings = QSettings('SRT-Cuon-Chieu', 'SRT-Cuon-Chieu')
+        self._remember_backend = backend is None
+        self._initial_backend = backend or self.settings.value('translation_backend', 'ollama', type=str)
+        self.ollama = OllamaClient(self)
+        self.ollama.models_ready.connect(self._ollama_models_ready)
+        self.ollama.pull_progress.connect(self._ollama_pull_progress)
+        self.ollama.model_pulled.connect(self._ollama_model_pulled)
+        self.ollama.translation_progress.connect(self._ollama_translation_progress)
+        self.ollama.translated.connect(self._on_ollama_response)
+        self.ollama.failed.connect(self._ollama_failed)
         self.prompt = self.settings.value('prompt', DEFAULT_PROMPT, type=str) or DEFAULT_PROMPT
         self.web_batch: list[int] = []
         self._web_loaded = False
@@ -155,8 +166,8 @@ class App(QMainWindow):
         self.service_wait_timer.timeout.connect(self._tick_service_wait)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.7.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
-        self.log(WEB_BRIDGE.status)
+        self._on_backend_changed()
+        self.log('SRT v1.8.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -175,7 +186,7 @@ class App(QMainWindow):
 
         top = QHBoxLayout()
         branding = QVBoxLayout()
-        heading = QLabel('DỊCH SRT CHATGPT WEB — TỰ ĐỘNG')
+        heading = QLabel('DỊCH SRT — OLLAMA & CHATGPT WEB')
         heading.setObjectName('heading')
         branding.addWidget(heading)
         note = QLabel('Chuẩn hóa JSON đầu vào/đầu ra · Dịch cuốn chiếu · Khóa ID và thời gian')
@@ -265,17 +276,51 @@ class App(QMainWindow):
         prompt_layout.addWidget(self._button('🔎 MỞ BẢNG TẠO PROMPT', self.edit_prompt, 'light'))
         forms.addWidget(prompt_group)
 
-        web_connect_group = QGroupBox('3. KẾT NỐI CHATGPT WEB — KHÔNG CẦN API')
-        web_connect_layout = QVBoxLayout(web_connect_group)
+        backend_group = QGroupBox('3. CHỌN BỘ DỊCH')
+        backend_layout = QVBoxLayout(backend_group)
+        self.backend_box = QComboBox()
+        self.backend_box.addItem('Ollama — chạy trên máy, không đăng nhập', 'ollama')
+        self.backend_box.addItem('ChatGPT Web', 'web')
+        self.backend_box.setCurrentIndex(1 if self._initial_backend == 'web' else 0)
+        backend_layout.addWidget(self.backend_box)
+        self.ollama_controls = QWidget()
+        ollama_layout = QVBoxLayout(self.ollama_controls)
+        ollama_layout.setContentsMargins(0, 0, 0, 0)
+        local_note = QLabel('Cài và mở Ollama trước. Tải mô hình một lần (vài GB), sau đó dịch trên máy. '
+                            'qwen3:4b là lựa chọn khởi đầu; tốc độ phụ thuộc RAM và GPU.')
+        local_note.setWordWrap(True)
+        ollama_layout.addWidget(local_note)
+        self.ollama_model = QComboBox()
+        self.ollama_model.setEditable(True)
+        self.ollama_model.addItem(self.settings.value('ollama_model', DEFAULT_MODEL, type=str) or DEFAULT_MODEL)
+        ollama_layout.addWidget(QLabel('Mô hình cục bộ:'))
+        ollama_layout.addWidget(self.ollama_model)
+        self.ollama_test_btn = self._button('Kiểm tra Ollama / Đọc mô hình đã cài', self.check_ollama, 'light')
+        self.ollama_pull_btn = self._button('Tải mô hình đã chọn (cần Internet)', self.pull_ollama_model)
+        self.ollama_cancel_btn = self._button('Dừng Ollama', self.cancel_ollama)
+        self.ollama_cancel_btn.setEnabled(False)
+        ollama_layout.addWidget(self.ollama_test_btn)
+        ollama_layout.addWidget(self.ollama_pull_btn)
+        ollama_layout.addWidget(self.ollama_cancel_btn)
+        ollama_layout.addWidget(self._button('Cài Ollama cho Windows',
+            lambda: QDesktopServices.openUrl(QUrl('https://ollama.com/download/windows'))))
+        self.ollama_status = QLabel('Chưa kiểm tra Ollama. Địa chỉ: 127.0.0.1:11434')
+        self.ollama_status.setWordWrap(True)
+        ollama_layout.addWidget(self.ollama_status)
+        backend_layout.addWidget(self.ollama_controls)
+        self.web_connect_controls = QWidget()
+        web_connect_layout = QVBoxLayout(self.web_connect_controls)
+        web_connect_layout.setContentsMargins(0, 0, 0, 0)
         connect_note = QLabel('Nhấn Kết nối để mở ChatGPT trong app và kiểm tra ô chat đã sẵn sàng. '
                               'Ứng dụng không tự gửi lời chào. Dùng được chế độ khách khi ChatGPT cho phép; không bắt đăng nhập ở phía ứng dụng.')
         connect_note.setWordWrap(True)
         web_connect_layout.addWidget(connect_note)
         self.test_btn = self._button('🧪 KIỂM TRA KẾT NỐI WEB', self.connect_and_open, 'light')
         web_connect_layout.addWidget(self.test_btn)
-        forms.addWidget(web_connect_group)
+        backend_layout.addWidget(self.web_connect_controls)
+        forms.addWidget(backend_group)
 
-        settings_group = QGroupBox('4. CÀI ĐẶT DỊCH CUỐN CHIẾU (WEB)')
+        settings_group = QGroupBox('4. CÀI ĐẶT DỊCH CUỐN CHIẾU')
         settings = QFormLayout(settings_group)
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 150)
@@ -285,7 +330,8 @@ class App(QMainWindow):
         self.timeout_spin.setRange(15, 300)
         self.timeout_spin.setValue(90)
         self.timeout_spin.setSuffix(' giây')
-        settings.addRow('Chờ khi Web không tiến triển:', self.timeout_spin)
+        self.timeout_label = QLabel('Chờ khi không có tiến triển:')
+        settings.addRow(self.timeout_label, self.timeout_spin)
         self.delay_spin = QSpinBox()
         self.delay_spin.setRange(0, 120)
         self.delay_spin.setValue(3)
@@ -359,6 +405,7 @@ class App(QMainWindow):
         self.splitter.setStretchFactor(1, 4)
         self.splitter.setStretchFactor(2, 5)
         self.splitter.setSizes([900, 440, 0])
+        self.backend_box.currentIndexChanged.connect(self._on_backend_changed)
         self.refresh_progress()
         self.refresh_navigation()
 
@@ -396,7 +443,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.7.0\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT v1.8.0\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -517,8 +564,144 @@ class App(QMainWindow):
         self.connection_label.setText(message)
         self.connection_label.setStyleSheet(f'color: {color}; font-weight: 700;')
 
+    def _uses_ollama(self):
+        return self.backend_box.currentData() == 'ollama'
+
+    def _on_backend_changed(self):
+        if self.auto_session:
+            self.stop_translation()
+        self.ollama.cancel()
+        self._end_connection_test()
+        self._connection_state = 'idle'
+        local = self._uses_ollama()
+        if self._remember_backend:
+            self.settings.setValue('translation_backend', self.backend_box.currentData())
+        self.ollama_controls.setVisible(local)
+        self.web_connect_controls.setVisible(not local)
+        self.web_btn.setVisible(not local)
+        self.auto_recover_checkbox.setVisible(not local)
+        self.connect_btn.setText('⚡ Kiểm tra Ollama' if local else '⚡ Mở ChatGPT Web')
+        self.batch_spin.setRange(1, 40 if local else 150)
+        self.batch_spin.setValue(8 if local else 20)
+        self.timeout_spin.setRange(30 if local else 15, 1800 if local else 300)
+        self.timeout_spin.setValue(600 if local else 90)
+        self.delay_spin.setValue(0 if local else 3)
+        if local:
+            self.web_panel.hide()
+            self.web_btn.setText('🌐 Hiện Web')
+            self.splitter.setSizes([950, 490, 0])
+            self._status('● Ollama cục bộ — chưa kiểm tra')
+            self.log('Bộ dịch: Ollama trên máy. Phụ đề không gửi tới ChatGPT; không dùng module ai_chatgpt.')
+        else:
+            self._status('● Chưa kiểm tra ChatGPT Web')
+            self.log('Bộ dịch: ChatGPT Web. Hạn mức của ChatGPT vẫn áp dụng.')
+        self._update_ollama_controls()
+
+    def _ensure_web_bridge(self):
+        global WEB_BRIDGE, PROBE_JS, READ_LATEST_RESPONSE_JS, _native_checked
+        if not _native_checked and not WEB_BRIDGE.native:
+            WEB_BRIDGE = load_web_bridge()
+            PROBE_JS = WEB_BRIDGE.probe_js
+            READ_LATEST_RESPONSE_JS = WEB_BRIDGE.read_js
+            _native_checked = True
+            self.log(WEB_BRIDGE.status)
+
+    def _update_ollama_controls(self):
+        available = not self.ollama.busy and not self.auto_session
+        self.backend_box.setEnabled(available)
+        self.ollama_model.setEnabled(available)
+        self.ollama_test_btn.setEnabled(available)
+        self.ollama_pull_btn.setEnabled(available)
+        self.ollama_cancel_btn.setEnabled(self.ollama.busy or (self.auto_session and self._uses_ollama()))
+        if self._uses_ollama():
+            self.connect_btn.setEnabled(available)
+            self.start_btn.setEnabled(available)
+
+    def check_ollama(self):
+        if self.auto_session or self.ollama.busy:
+            return
+        self.ollama_status.setText('Đang kiểm tra Ollama trên máy…')
+        self._status('◌ Đang kiểm tra Ollama…', '#ab7700')
+        self.ollama.refresh_models()
+        self._update_ollama_controls()
+
+    def _ollama_models_ready(self, names):
+        current = self.ollama_model.currentText().strip() or DEFAULT_MODEL
+        self.ollama_model.clear()
+        self.ollama_model.addItems(names or [current])
+        self.ollama_model.setCurrentText(current if current in names or not names else names[0])
+        message = (f'Ollama đã kết nối; có {len(names)} mô hình cục bộ. Chọn mô hình rồi bấm Bắt đầu.' if names else
+                   'Ollama đã kết nối nhưng chưa có mô hình cục bộ. Bấm “Tải mô hình đã chọn”.')
+        self.ollama_status.setText(message)
+        self._status('● Ollama đã kết nối', '#168b50')
+        self.log(message)
+        self._update_ollama_controls()
+
+    def pull_ollama_model(self):
+        if self.auto_session or self.ollama.busy:
+            return
+        try:
+            model = local_model_name(self.ollama_model.currentText())
+            self.ollama.pull_model(model)
+        except ValueError as error:
+            self._ollama_failed(str(error))
+            return
+        self.settings.setValue('ollama_model', model)
+        self.ollama_status.setText(f'Đang tải {model}; lần đầu cần Internet và dung lượng vài GB…')
+        self.log(f'Tải mô hình Ollama: {model}. Có thể bấm Dừng Ollama; lần sau tải tiếp phần còn thiếu.')
+        self._update_ollama_controls()
+
+    def _ollama_pull_progress(self, message):
+        self.ollama_status.setText(message)
+
+    def _ollama_model_pulled(self, model):
+        self.log(f'✓ Đã tải mô hình {model}.')
+        self.check_ollama()
+
+    def cancel_ollama(self):
+        if self.auto_session and self._uses_ollama():
+            self.stop_translation()
+        else:
+            self.ollama.cancel()
+            self._update_ollama_controls()
+        self.ollama_status.setText('Đã dừng Ollama. Tiến độ đã nhận vẫn được giữ.')
+
+    def _ollama_failed(self, message):
+        self.ollama_status.setText(message)
+        self._status('● Ollama chưa sẵn sàng', '#c43140')
+        if self.auto_session and self._uses_ollama():
+            self._auto_failed(message)
+        else:
+            self.log('⚠ ' + message)
+            self._update_ollama_controls()
+
+    def _ollama_translation_progress(self, chars):
+        if self.auto_session and self._uses_ollama():
+            self.ollama_status.setText(f'Ollama đang dịch lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}: '
+                                       f'{chars} ký tự. Lần nạp mô hình đầu tiên có thể lâu hơn.')
+
+    def _on_ollama_response(self, text):
+        if not self.auto_session or not self._uses_ollama() or not self.batch_waiting_for_json:
+            return
+        try:
+            parsed = extract_json(text)
+            mapping = check_translations(self.auto_batch, parsed)
+        except (ValueError, TypeError) as error:
+            try:
+                parsed = extract_json(text)
+            except (ValueError, TypeError):
+                parsed = {'items': []}
+            self.log('⚠ Kiểm tra bản dịch Ollama: ' + str(error)[:300])
+            self._accept_partial_response(parsed)
+            return
+        self._accept_batch(mapping)
+
     def connect_and_open(self):
         """Check that ChatGPT Web and its chat editor are ready."""
+        if self._uses_ollama():
+            self.check_ollama()
+            return
+        self._ensure_web_bridge()
         if not WEB_AVAILABLE or self.web_view is None:
             self.show_notice('Máy thiếu QtWebEngine: không thể kiểm tra kết nối trong khung Web. '
                              'Hãy chạy run_windows.bat để cài đúng thư viện.')
@@ -659,11 +842,11 @@ class App(QMainWindow):
         return [cue for cue in self.model.cues if not cue.translation.strip() and cue.source.strip()]
 
     def start_translation(self):
-        """Send SRT batches to ChatGPT Web and import each JSON response."""
+        """Translate missing SRT cues through the selected backend."""
         if not self.model.cues:
             self.show_notice('Hãy mở file SRT trước.')
             return
-        if not WEB_AVAILABLE or self.web_view is None:
+        if not self._uses_ollama() and (not WEB_AVAILABLE or self.web_view is None):
             self.show_notice('Máy thiếu QtWebEngine, không thể dịch tự động.')
             return
         if self.auto_session:
@@ -672,6 +855,18 @@ class App(QMainWindow):
         if not self._missing():
             self.show_notice('Tất cả dòng đã có bản dịch.')
             return
+        if self._uses_ollama():
+            if self.ollama.busy:
+                self.show_notice('Ollama đang kiểm tra hoặc tải mô hình. Chờ hoàn tất trước khi dịch.')
+                return
+            try:
+                self.auto_local_model = local_model_name(self.ollama_model.currentText())
+            except ValueError as error:
+                self.show_notice(str(error))
+                return
+            self.settings.setValue('ollama_model', self.auto_local_model)
+        else:
+            self._ensure_web_bridge()
         self.auto_retries = {}
         self.auto_recovery_counts = {}
         self.auto_recovering = False
@@ -682,9 +877,11 @@ class App(QMainWindow):
         self.pause_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
         self.open_btn.setEnabled(False)
-        if not self.web_panel.isVisible():
+        self._update_ollama_controls()
+        if not self._uses_ollama() and not self.web_panel.isVisible():
             self.toggle_web()
-        self.log(f'Bắt đầu dịch tự động: mỗi lô {self.batch_spin.value()} dòng.')
+        engine = 'Ollama ' + self.auto_local_model if self._uses_ollama() else 'ChatGPT Web'
+        self.log(f'Bắt đầu dịch bằng {engine}: mỗi lô {self.batch_spin.value()} dòng.')
         self._queue_next_auto_batch()
 
     def _queue_next_auto_batch(self):
@@ -701,6 +898,13 @@ class App(QMainWindow):
         self.auto_received = None
         size = 1 if self._missing()[0].number in self.auto_retries else self.batch_spin.value()
         self.auto_batch = self._missing()[:size]
+        if self._uses_ollama():
+            # Keep source and output within the local model's context window.
+            while len(self.auto_batch) > 1 and len(make_batch_prompt(self.auto_batch, self.prompt)) > 6000:
+                self.auto_batch.pop()
+            if len(make_batch_prompt(self.auto_batch, self.prompt)) > 6000:
+                self._auto_failed(f'ID {self.auto_batch[0].number} hoặc prompt quá dài cho mô hình cục bộ. Rút ngắn prompt hoặc chia nội dung phụ đề này.')
+                return
         self.batch_waiting_for_json = True
         prompt = make_batch_prompt(self.auto_batch, self.prompt)
         self.auto_deadline = time.monotonic() + self.timeout_spin.value()
@@ -708,6 +912,14 @@ class App(QMainWindow):
         self.auto_last_error = ''
         self.auto_editor_deadline = time.monotonic() + self.timeout_spin.value()
         self.auto_editor_wait_logged = False
+        if self._uses_ollama():
+            self.ollama_status.setText(f'Đang nạp mô hình / dịch lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
+            self.log(f'Đang dịch cục bộ lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}.')
+            try:
+                self.ollama.translate(self.auto_local_model, self.auto_batch, self.prompt, self.timeout_spin.value())
+            except ValueError as error:
+                self._auto_failed(str(error))
+            return
         self.web_status.setText(f'Đang gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
         self._run_batch_script(PROBE_JS, lambda result: self._on_batch_probe(result, prompt))
 
@@ -1049,7 +1261,6 @@ class App(QMainWindow):
             return
         # Retain valid cues even when another cue has wrong line count or is
         # missing. Only rejected cues are retried, individually and boundedly.
-        mapping, errors = {}, []
         rows = parsed.get('items')
         if not isinstance(rows, list):
             self.auto_last_error = 'JSON phản hồi thiếu danh sách items.'
@@ -1061,6 +1272,13 @@ class App(QMainWindow):
             except (ValueError, TypeError):
                 self._schedule_poll()
                 return
+        self._accept_partial_response(parsed)
+
+    def _accept_partial_response(self, parsed):
+        mapping, errors = {}, []
+        rows = parsed.get('items', [])
+        if not isinstance(rows, list):
+            rows = []
         for cue in self.auto_batch:
             matches = [row for row in rows if isinstance(row, dict) and
                        type(row.get('id')) is int and row['id'] == cue.number]
@@ -1080,6 +1298,8 @@ class App(QMainWindow):
         self.apply_translations(mapping)
         self.log(f'✓ Đã nhận tự động {len(mapping)} ID.')
         self.web_status.setText(f'Đã cập nhật {len(mapping)} dòng vào bảng dịch.')
+        if self._uses_ollama():
+            self.ollama_status.setText(f'Đã lưu {len(mapping)} ID. Còn {len(self._missing())} ID chưa dịch.')
         if any(self.auto_retries.get(c.number, 0) > 2 for c in self.auto_batch if c.number not in mapping):
             self._auto_failed('Phản hồi vẫn sai sau 2 lần thử lại. ' + '; '.join(errors[:3]))
             return
@@ -1129,6 +1349,7 @@ class App(QMainWindow):
                 self._queue_next_auto_batch()
 
     def stop_translation(self):
+        self.ollama.cancel()
         self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()
@@ -1144,12 +1365,14 @@ class App(QMainWindow):
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
+        self._update_ollama_controls()
         self.pause_btn.setText('⏸ TẠM DỪNG')
         self._save_checkpoint()
         self.log('■ Đã kết thúc phiên. Các ID đã dịch vẫn được lưu lại.')
 
 
     def closeEvent(self, event):
+        self.ollama.cancel()
         self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()

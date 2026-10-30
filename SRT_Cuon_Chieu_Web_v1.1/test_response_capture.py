@@ -15,7 +15,7 @@ class ReplyCaptureTests(unittest.TestCase):
         cls.qt.setQuitOnLastWindowClosed(False)
 
     def run_capture(self, transient, *, initial='', read_id=17, stop=False):
-        window = App()
+        window = App(backend='web')
         loop = QEventLoop()
         values = []
         cues = parse_srt('1\n00:00:01,000 --> 00:00:02,000\n你好\n')

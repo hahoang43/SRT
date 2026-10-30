@@ -20,7 +20,7 @@ class WebBridgeTests(unittest.TestCase):
         cls.qt.setQuitOnLastWindowClosed(False)
 
     def test_local_web_response_reaches_translation_table(self):
-        window = App()
+        window = App(backend='web')
         loop = QEventLoop()
         values = []
         payload = '{"items":[{"id":1,"vi":"Xin chào"}]}'
@@ -80,7 +80,7 @@ class WebBridgeTests(unittest.TestCase):
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_guest_dom_without_author_role(self):
-        window = App()
+        window = App(backend='web')
         loop = QEventLoop()
         values = []
         payload = '{"items":[{"id":1,"vi":"Chào bạn"}]}'
@@ -114,7 +114,7 @@ class WebBridgeTests(unittest.TestCase):
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_guest_json_fallback_excludes_user_content(self):
-        window = App()
+        window = App(backend='web')
         loop = QEventLoop()
         values = []
         payload = '{"items":[{"id":1,"vi":"Chào bạn"}]}'
@@ -146,7 +146,7 @@ class WebBridgeTests(unittest.TestCase):
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_plain_guest_conversation_without_message_selectors(self):
-        window = App()
+        window = App(backend='web')
         loop = QEventLoop()
         values = []
         payload = '{"items":[{"id":1,"vi":"Chào \\"bạn\\" {mới}\\nHẹn gặp"}]}'
@@ -198,7 +198,7 @@ class WebBridgeTests(unittest.TestCase):
         ]
         for html in cases:
             with self.subTest(html=html):
-                window = App()
+                window = App(backend='web')
                 loop = QEventLoop()
                 values = []
                 def received(value):
@@ -311,7 +311,7 @@ class WebBridgeTests(unittest.TestCase):
                   return JSON.stringify({text:'{"items":[{"id":1,"vi":"Chào"}]}',
                     is_generating:false,debug:String(window.scrollCalls)});
                 })()'''
-        window=App()
+        window=App(backend='web')
         loop=QEventLoop()
         values=[]
         bridge=WebBridge(ScrollingHandler)
@@ -343,7 +343,7 @@ class WebBridgeTests(unittest.TestCase):
 
 
     def _assert_two_batches(self, editor_markup, keep_draft=False):
-        window = App()
+        window = App(backend='web')
         loop = QEventLoop()
         notices = []
         window.model.load_cues(parse_srt(
@@ -418,7 +418,7 @@ button.onclick = () => {
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def make_session(self):
-        window = App()
+        window = App(backend='web')
         window.auto_recover_checkbox.setChecked(False)
         window.show_notice = lambda message: None
         window.model.load_cues(parse_srt(
@@ -574,7 +574,7 @@ button.onclick = () => {
                  ('<p hidden>'+message+'</p>',False)]
         for markup, blocked in cases:
             with self.subTest(blocked=blocked,markup=markup):
-                window = App()
+                window = App(backend='web')
                 loop = QEventLoop()
                 values = []
                 def received(value):
@@ -721,7 +721,7 @@ button.onclick = () => {
         ]
         for html, ready, kind in cases:
             with self.subTest(html=html):
-                window = App()
+                window = App(backend='web')
                 loop = QEventLoop()
                 values = []
                 def received(value):
