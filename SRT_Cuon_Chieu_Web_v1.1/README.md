@@ -87,3 +87,9 @@ Chạy kiểm thử: `python -m unittest -v test_engine test_web_connect`.
 Bổ sung bộ đọc dự phòng cho vùng hội thoại (`main`, `role=main`, `#thread`, `#conversation`) khi giao diện khách không có role/turn/markdown. Bộ đọc lấy đối tượng JSON dịch hoàn chỉnh, xử lý dấu ngoặc/escape trong chuỗi, loại ô soạn thảo, tin nhắn người dùng và prompt vừa gửi; không nhận JSON cắt dở hoặc ví dụ `vi:"..."`.
 
 Dòng “Cấu trúc Web” trong nhật ký cho biết số role/turn, số ký tự vùng hội thoại và số JSON dịch tìm được, không ghi toàn văn hội thoại. Nếu vẫn thấy 0 phản hồi trong v1.2.2 dù Web có JSON, gửi thêm dòng này để chẩn đoán chính xác. Đây là sửa bộ đọc giao diện, không thay đổi yêu cầu đăng nhập của ChatGPT.
+
+### v1.2.3: Nút gửi chưa sẵn sàng sau nhiều lô
+
+Trước đây ứng dụng chỉ kiểm tra nút gửi một lần, 350 ms sau khi điền prompt. Bản này chờ nút gửi tối đa 30 giây (hoặc thời gian chờ Web nếu thấp hơn), kiểm tra lại mỗi 500 ms và chỉ bấm một lần khi nút được bật. Không điền lại prompt hoặc gửi lại khi đã bấm gửi. Thay đổi nội dung ô chat sẽ dừng để tránh gửi nhầm; nút submit ngoài form soạn chat không được dùng thay nút gửi.
+
+Nhật ký phân biệt “nút bị vô hiệu hóa”, “chưa tìm thấy nút” và “đang tạo câu trả lời trước”, không tự kết luận là thiếu đăng nhập. Hết thời gian chờ thì dừng, giữ checkpoint. Sau cập nhật, mở lại cùng file SRT để phục hồi tiến độ rồi bắt đầu dịch phần còn thiếu. Thời gian chờ nút gửi này độc lập với thời gian nghỉ giữa các lô và không bỏ qua giới hạn của ChatGPT.

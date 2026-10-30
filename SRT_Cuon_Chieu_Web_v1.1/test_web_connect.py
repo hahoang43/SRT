@@ -2,7 +2,7 @@ import json
 import shutil
 import subprocess
 import unittest
-from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS
+from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS
 
 
 class WebConnectionTests(unittest.TestCase):
@@ -59,6 +59,43 @@ process.stdout.write(JSON.stringify(SCRIPT));
         self.assertEqual(result['text'], payload)
         self.assertFalse(result['generating'])
         self.assertTrue(self.run_dom(READ_LATEST_RESPONSE_JS, [reply], stop=True)['generating'])
+
+    def test_send_never_clicks_disabled_controls_changed_drafts_or_login(self):
+        if not shutil.which('node'):
+            self.skipTest('Node.js required')
+        fixture = r'''
+let clicked = 0;
+const shown = {getClientRects:()=>[1],getAttribute:()=>null};
+const editor = {...shown, tagName:'TEXTAREA', value:DRAFT, closest:()=>null};
+const send = {...shown, disabled:DISABLED, click:()=>clicked++};
+global.location = {hostname:'chatgpt.com'};
+global.window = {__srtOutboundPrompt:'batch'};
+global.getComputedStyle = () => ({visibility:'visible'});
+global.document = {querySelectorAll: selector => {
+  if(selector.includes('#prompt-textarea')) return [editor];
+  if(selector.includes('stop-button')) return STOP ? [shown] : [];
+  if(selector === 'button#composer-submit-button') return PRESENT ? [send] : [];
+  if(selector === 'button[type="submit"]') throw new Error('Must not query unrelated login submit button');
+  return [];
+}};
+const result = SCRIPT;
+process.stdout.write(JSON.stringify({result, clicked}));
+'''
+        for present, disabled, draft, stop, clicks, retry in [
+            (True, True, 'batch', False, 0, True),
+            (False, False, 'batch', False, 0, True),
+            (True, False, 'edited draft', False, 0, False),
+            (True, False, 'batch', True, 0, True),
+            (True, False, 'batch', False, 1, None),
+        ]:
+            with self.subTest(present=present, disabled=disabled, draft=draft, stop=stop):
+                code = fixture.replace('DRAFT', json.dumps(draft)).replace('DISABLED', json.dumps(disabled)).replace('PRESENT', json.dumps(present)).replace('STOP', json.dumps(stop)).replace('SCRIPT', SEND_MESSAGE_JS)
+                output = subprocess.run(['node','-e',code],capture_output=True,text=True,check=True)
+                value = json.loads(output.stdout)
+                self.assertEqual(value['clicked'], clicks)
+                self.assertEqual(value['result']['ok'], bool(clicks))
+                if retry is not None:
+                    self.assertEqual(value['result']['retryable'], retry)
 
     def test_other_domain_does_not_read_messages(self):
         for script in (PROBE_JS, READ_LATEST_RESPONSE_JS):

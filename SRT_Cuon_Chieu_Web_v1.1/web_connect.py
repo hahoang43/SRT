@@ -157,13 +157,26 @@ SEND_MESSAGE_JS = r"""(() => {
   if (!['chatgpt.com', 'www.chatgpt.com'].includes(location.hostname)) {
     return {ok:false, why:'Trang hiện tại không phải ChatGPT.'};
   }
-  const button = ['button#composer-submit-button','button[data-testid="send-button"]',
+  const shown = el => el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+  const editor = [...document.querySelectorAll('#prompt-textarea, textarea[name="prompt-textarea"], ' +
+    '[data-testid="prompt-textarea"], textarea#mobile-composer-prompt, [contenteditable="true"]')].find(shown);
+  if (!editor) return {ok:false, retryable:false, why:'Không còn ô chat trên trang.'};
+  const draft = editor.tagName.toLowerCase() === 'textarea' ? editor.value : editor.innerText;
+  if (!draft || draft.trim() !== (window.__srtOutboundPrompt || '').trim()) {
+    return {ok:false, retryable:false, why:'Nội dung ô chat đã thay đổi. Chưa bấm gửi để tránh gửi nhầm hoặc gửi trùng.'};
+  }
+  if ([...document.querySelectorAll('[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Dừng"]')].some(shown)) {
+    return {ok:false, retryable:true, why:'Trang vẫn đang tạo câu trả lời trước.'};
+  }
+  const explicit = ['button#composer-submit-button','button[data-testid="send-button"]',
     'button[aria-label="Send message"]','button[aria-label="Send prompt"]',
-    'button[aria-label="Gửi tin nhắn"]','button[type="submit"]']
-    .flatMap(s => [...document.querySelectorAll(s)])
-    .find(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' &&
-      !el.disabled && el.getAttribute('aria-disabled') !== 'true');
-  if (!button) return {ok:false, why:'Nút gửi chưa sẵn sàng. Kiểm tra trang có báo giới hạn hoặc yêu cầu đăng nhập không.'};
+    'button[aria-label="Gửi tin nhắn"]'].flatMap(s => [...document.querySelectorAll(s)]);
+  const form = editor.closest('form');
+  const controls = explicit.concat(form ? [...form.querySelectorAll('button[type="submit"]')] : []);
+  const visible = [...new Set(controls)].filter(shown);
+  const button = visible.find(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true');
+  if (!button) return {ok:false, retryable:true,
+    why:visible.length ? 'Nút gửi đang bị vô hiệu hóa.' : 'Chưa tìm thấy nút gửi của ô chat.'};
   button.click();
   return {ok:true};
 })()"""

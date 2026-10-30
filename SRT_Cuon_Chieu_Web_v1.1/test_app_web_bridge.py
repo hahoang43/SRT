@@ -253,7 +253,7 @@ class WebBridgeTests(unittest.TestCase):
 let sent = 0;
 const editor = document.querySelector('textarea');
 const button = document.querySelector('button');
-editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, 100));
+editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, sent === 0 ? 1200 : 2200));
 button.onclick = () => {
   sent++;
   const turn = document.createElement('article');
@@ -353,6 +353,74 @@ button.onclick = () => {
             window._on_batch_response({'assistantCount':1, 'text':'new partial', 'lastText':'new partial', 'generating':True})
             self.assertGreater(window.auto_deadline, time.monotonic() + 10)
             self.assertEqual(len(window._missing()), 3)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_send_waits_when_disabled_and_success_is_processed_once(self):
+        window = self.make_session()
+        scheduled, polls = [], []
+        window._schedule_send = lambda delay=500: scheduled.append(delay)
+        window._schedule_poll = polls.append
+        try:
+            window.auto_batch = window.model.cues[:1]
+            window.auto_send_state = 'checking'
+            window.auto_send_deadline = time.monotonic() + 30
+            window.auto_send_reason = ''
+            window._on_batch_sent({'ok':False, 'retryable':True, 'why':'Nút gửi đang bị vô hiệu hóa.'})
+            self.assertTrue(window.auto_session)
+            self.assertEqual(window.auto_send_state, 'waiting')
+            self.assertEqual(scheduled, [500])
+            window.auto_send_state = 'checking'
+            window._on_batch_sent({'ok':True})
+            self.assertEqual(window.auto_send_state, 'sent')
+            self.assertEqual(polls, [1500])
+            window._on_batch_sent({'ok':True})
+            self.assertEqual(polls, [1500])
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_waiting_send_times_out_without_clicking_or_losing_translations(self):
+        window = self.make_session()
+        timers, failures, scripts = [], [], []
+        window.model.cues[0].translation = 'Xin chào'
+        window._run_web_script = lambda script, callback: scripts.append(script)
+        def failed(message):
+            failures.append(message)
+            window.stop_translation()
+        window._auto_failed = failed
+        try:
+            window.auto_send_state = 'waiting'
+            window.auto_send_deadline = time.monotonic() - 1
+            window.auto_send_reason = 'Nút gửi đang bị vô hiệu hóa.'
+            with patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)):
+                window._schedule_send()
+            timers[0]()
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(scripts, [])
+            self.assertFalse(window.auto_session)
+            self.assertEqual(window.model.cues[0].translation, 'Xin chào')
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_stopped_session_cancels_pending_send(self):
+        window = self.make_session()
+        timers, scripts = [], []
+        window._run_web_script = lambda script, callback: scripts.append(script)
+        try:
+            window.auto_send_state = 'waiting'
+            window.auto_send_deadline = time.monotonic() + 30
+            with patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)):
+                window._schedule_send()
+            window.stop_translation()
+            window.auto_session = True
+            timers[0]()
+            self.assertEqual(scripts, [])
         finally:
             window.close()
             window.deleteLater()

@@ -108,7 +108,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.2.2 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.2.3 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -136,12 +136,13 @@ class App(QMainWindow):
         self.auto_retries = {}
         self.auto_last_error = ''
         self.auto_diagnostic = None
+        self.auto_send_state = 'idle'
         self.next_batch_timer = QTimer(self)
         self.next_batch_timer.setSingleShot(True)
         self.next_batch_timer.timeout.connect(self._queue_next_auto_batch)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.2.2 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.2.3 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -376,7 +377,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.2.2\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.2.3\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -696,19 +697,43 @@ class App(QMainWindow):
         if not isinstance(result, dict) or not result.get('ok'):
             self._auto_failed('Không điền được nội dung lô vào ô chat.')
             return
+        self.auto_send_state = 'waiting'
+        self.auto_send_deadline = time.monotonic() + min(30, self.timeout_spin.value())
+        self.auto_send_reason = ''
+        self._schedule_send(350)
+
+    def _schedule_send(self, delay=500):
         generation = self.auto_generation
         def send():
-            if self.auto_session and generation == self.auto_generation:
+            if (self.auto_session and generation == self.auto_generation and
+                    self.auto_send_state == 'waiting'):
+                if time.monotonic() >= self.auto_send_deadline:
+                    self._auto_failed('Đã chờ nút gửi nhưng chưa sẵn sàng: ' + self.auto_send_reason +
+                                      ' Bản dịch đã nhận vẫn được lưu. Kiểm tra thông báo thực tế trên Web trước khi thử lại.')
+                    return
+                self.auto_send_state = 'checking'
                 self._run_batch_script(SEND_MESSAGE_JS, self._on_batch_sent)
-        QTimer.singleShot(350, send)
+        QTimer.singleShot(delay, send)
 
     def _on_batch_sent(self, result):
-        if not self.auto_session:
+        if not self.auto_session or self.auto_send_state != 'checking':
             return
         if not isinstance(result, dict) or not result.get('ok'):
-            self._auto_failed(result.get('why', 'Không gửi được lô.') if isinstance(result, dict) else 'Không gửi được lô.')
+            reason = result.get('why', result.get('scriptError', 'Không kiểm tra được nút gửi.')) if isinstance(result, dict) else 'Không kiểm tra được nút gửi.'
+            if isinstance(result, dict) and result.get('retryable') is True:
+                self.auto_send_state = 'waiting'
+                if reason != self.auto_send_reason:
+                    self.log('◌ Đang chờ gửi: ' + reason)
+                self.auto_send_reason = reason
+                self.web_status.setText('Đang chờ nút gửi sẵn sàng (tối đa 30 giây): ' + reason)
+                self._schedule_send()
+                return
+            self._auto_failed(reason)
             return
-        self.log(f'✓ Đã gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}; đang chờ JSON.')
+        self.auto_send_state = 'sent'
+        self.auto_deadline = time.monotonic() + self.timeout_spin.value()
+        self.auto_hard_deadline = time.monotonic() + 900
+        self.log(f'✓ Đã bấm gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}; đang chờ JSON.')
         self._schedule_poll(1500)
 
     def _poll_batch_response(self):
@@ -844,6 +869,7 @@ class App(QMainWindow):
                 self._queue_next_auto_batch()
 
     def stop_translation(self):
+        self.auto_send_state = 'idle'
         self.auto_generation += 1
         self.auto_poll_busy = False
         self.next_batch_timer.stop()
