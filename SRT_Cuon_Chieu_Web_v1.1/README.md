@@ -127,3 +127,11 @@ Lớp tích hợp chuyển chuỗi JSON `text/is_generating` của module sang g
 `build_exe_windows.bat` dùng Python 3.12 và spec kèm binary vào bản đóng gói. Không nén UPX để giữ đúng checksum. Bản `.exe` cũ không tự nhận thay đổi: chạy mã nguồn hoặc build lại trên Windows.
 
 Linux và Python khác phiên bản vẫn dùng bộ Web tích hợp để phát triển. Kiểm thử bằng `python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_app_web_bridge`. Kiểm thử Linux xác minh định dạng/checksum binary, điều kiện nạp và lớp tích hợp bằng API giả lập trên QtWebEngine; chưa thực thi binary Windows hoặc xác minh bản đóng gói `.exe`. Module này không loại bỏ giới hạn hoặc yêu cầu đăng nhập do ChatGPT áp dụng.
+
+### v1.3.1: Giữ JSON xuất hiện giữa hai lần đọc định kỳ
+
+Ngoài việc đọc định kỳ qua module `.pyd`, ứng dụng cài bộ theo dõi thay đổi DOM trước khi điền/gửi lô. Bộ này chỉ giữ JSON đầy đủ đúng các ID và số dòng của lô hiện tại; không giữ JSON cắt dở, prompt, phản hồi sai lô hoặc bản dịch cũ có sẵn trước lúc gửi. Khi phản hồi bị xóa giữa hai lần đọc, lần đọc tiếp theo vẫn có thể nhập bản hợp lệ đã giữ. Python tiếp tục kiểm tra lại trước khi ghi checkpoint.
+
+Trong dòng “Cấu trúc Web”, `captureInstalled` cho biết bộ theo dõi còn tồn tại trong trang, `capturedReplies` cho biết số bản JSON hợp lệ đã bắt được cho lô này. Dừng/đóng ứng dụng, kết thúc lô hoặc chờ giới hạn sẽ ngắt bộ theo dõi; ID phiên ngăn dùng nhầm dữ liệu lô trước. Thông báo hết thời gian chờ chỉ rõ chưa nhận JSON mới hợp lệ, thay vì kết luận module chưa được nạp hoặc chưa đăng nhập.
+
+Kiểm thử bổ sung: `python -B -m unittest -v test_response_capture` dùng QtWebEngine thật với JSON xuất hiện rồi bị xóa trước lần đọc. Cơ chế này không thể khôi phục nội dung chưa từng có JSON đầy đủ trong DOM, nội dung mất trước khi bộ theo dõi được gọi, hoặc phản hồi mất do tải lại cả trang trước lần đọc tiếp theo. Không tự gửi lại yêu cầu để tránh dịch trùng hay gửi thêm khi dịch vụ yêu cầu chờ.

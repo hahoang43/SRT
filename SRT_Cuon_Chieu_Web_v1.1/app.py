@@ -32,6 +32,7 @@ from srt_engine import (
 )
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js
 from native_chatgpt_bridge import load_web_bridge, NATIVE_SEND_ACK_JS
+from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
 
 WEB_BRIDGE = load_web_bridge()
 PROBE_JS = WEB_BRIDGE.probe_js
@@ -113,7 +114,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.3.0 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.3.1 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -152,7 +153,7 @@ class App(QMainWindow):
         self.service_wait_timer.timeout.connect(self._tick_service_wait)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.3.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.3.1 — Sẵn sàng. Mở file SRT để bắt đầu.')
         self.log(WEB_BRIDGE.status)
 
     def _button(self, text: str, action, kind: str = ''):
@@ -388,7 +389,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.3.0\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.3.1\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -697,6 +698,7 @@ class App(QMainWindow):
         self._run_web_script(script, current)
 
     def _wait_for_service(self, result):
+        self._stop_reply_capture()
         retry_at = result.get('retryAt')
         if (type(retry_at) not in (int, float) or not 0 < retry_at - time.time() <= 86400):
             self._auto_failed('ChatGPT yêu cầu chờ nhưng chưa xác định được thời điểm thử lại. Bản dịch đã lưu được giữ nguyên; kiểm tra thông báo trên Web.')
@@ -765,7 +767,7 @@ class App(QMainWindow):
         self.auto_stable_reads = 0
         if WEB_BRIDGE.native:
             try:
-                script = WEB_BRIDGE.send_js(prompt, self.auto_generation)
+                script = with_reply_capture(WEB_BRIDGE.send_js(prompt, self.auto_generation), self.auto_batch, self.auto_generation)
             except Exception as error:
                 self._auto_failed('Module ai_chatgpt không tạo được lệnh gửi: ' + str(error))
                 return
@@ -773,7 +775,7 @@ class App(QMainWindow):
             self.auto_send_deadline = time.monotonic() + min(30, self.timeout_spin.value())
             self._run_batch_script(script, self._on_native_queued)
         else:
-            self._run_batch_script(make_send_message_js(prompt), self._on_batch_prepared)
+            self._run_batch_script(with_reply_capture(make_send_message_js(prompt), self.auto_batch, self.auto_generation), self._on_batch_prepared)
 
     def _on_native_queued(self, result):
         if not isinstance(result, dict) or result.get('ok') is not True:
@@ -802,6 +804,10 @@ class App(QMainWindow):
             self._on_batch_sent(result)
         else:
             self._auto_failed('Không xác nhận được thao tác gửi của ai_chatgpt; không tự gửi lại.')
+
+    def _stop_reply_capture(self):
+        if self.web_view is not None:
+            self.web_view.page().runJavaScript(STOP_CAPTURE_JS)
 
     def _cancel_native_pending(self):
         if WEB_BRIDGE.native and self.auto_send_state == 'native_pending' and self.web_view is not None:
@@ -854,10 +860,10 @@ class App(QMainWindow):
         if not self.auto_session or not self.batch_waiting_for_json or self.auto_poll_busy:
             return
         if time.monotonic() >= min(self.auto_deadline, self.auto_hard_deadline):
-            self._auto_failed(self.auto_last_error or 'Chưa đọc được bản dịch từ giao diện Web. Nếu bên phải đã có JSON, hãy gửi nhật ký (bao gồm dòng Cấu trúc Web) để kiểm tra bộ đọc; nếu trang báo giới hạn, cần xử lý yêu cầu của ChatGPT.')
+            self._auto_failed(self.auto_last_error or f'Chưa nhận được JSON dịch mới hợp lệ cho lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}. Không dùng phản hồi cũ thay cho lô này. Bản dịch trước đó vẫn được lưu; kiểm tra phản hồi hoặc thông báo thực tế trên Web trước khi thử lại.')
             return
         self.auto_poll_busy = True
-        self._run_batch_script(READ_LATEST_RESPONSE_JS, self._on_batch_response)
+        self._run_batch_script(read_with_capture(READ_LATEST_RESPONSE_JS, self.auto_generation), self._on_batch_response)
 
     def _on_batch_response(self, result):
         self.auto_poll_busy = False
@@ -963,6 +969,7 @@ class App(QMainWindow):
         self._accept_batch(mapping, errors)
 
     def _accept_batch(self, mapping, errors=()):
+        self._stop_reply_capture()
         for number in mapping:
             self.auto_retries.pop(number, None)
         self.apply_translations(mapping)
@@ -1017,6 +1024,7 @@ class App(QMainWindow):
                 self._queue_next_auto_batch()
 
     def stop_translation(self):
+        self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()
         self.auto_send_state = 'idle'
@@ -1037,6 +1045,7 @@ class App(QMainWindow):
 
 
     def closeEvent(self, event):
+        self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()
         self.auto_generation += 1
