@@ -107,3 +107,11 @@ Không khôi phục từ JSON cắt dở, thiếu ID hoặc sai số dòng. Bả
 Các bước kiểm tra kết nối, điền prompt và gửi dùng chung một bộ nhận diện editor: textarea hoặc contenteditable thực sự có thể nhập, kể cả editor không có ID hoặc nằm trong wrapper. Loại editor ẩn, disabled, readOnly và contenteditable=false. Đối chiếu nội dung bỏ qua khác biệt xuống dòng trống do trình soạn thảo HTML tạo ra, không thay đổi JSON phụ đề gửi đi.
 
 Trước mỗi lô, chờ editor theo thời gian chờ Web đã đặt, kiểm tra lại mỗi 750 ms thay vì dừng sau lần dò đầu tiên. Hết hạn thì báo chưa thấy ô chat có thể nhập, không tự suy luận cần đăng nhập. Không tự tải lại trang, mở hội thoại mới hay gửi lại lô trong lúc chờ. Bấm Dừng hủy các lượt dò còn chờ; checkpoint được giữ nguyên.
+
+### v1.2.6: Nhận biết thông báo yêu cầu chờ của ChatGPT
+
+Ứng dụng nhận diện thông báo “We're doing a quick check to keep ChatGPT reliable. Try again after H:MM AM/PM” trước khi nhập/gửi và trong khi nhận phản hồi. Khi đọc được giờ chờ hợp lệ, giữ checkpoint, hiển thị đếm ngược và không gửi thêm cho đến thời điểm đó. Giờ được tính theo múi giờ trình duyệt/máy Windows; cần để đồng hồ hệ thống chính xác.
+
+Để ứng dụng mở nếu muốn tự tiếp tục. Đến hạn, kiểm tra lại ô chat và chỉ dịch các ID còn thiếu. Nếu dịch vụ vẫn chưa cho gửi hoặc đưa ra giờ chờ mới, ứng dụng tiếp tục xử lý theo thông báo thực tế; đến giờ không bảo đảm dịch vụ đã sẵn sàng. Bấm Dừng hoặc đóng ứng dụng sẽ hủy tự tiếp tục. Nếu không đọc được giờ, ứng dụng dừng và yêu cầu xem thông báo thay vì đoán thời gian.
+
+Đây là cơ chế chờ theo điều kiện dịch vụ, không phải dùng ChatGPT không giới hạn. Không đổi IP, tài khoản hoặc phiên để né giới hạn, không tự vượt xác minh. Kiểm thử cục bộ gồm giờ AM/PM, thông báo đã hết hạn, qua nửa đêm, nhận diện DOM thật, không nhầm lời người dùng/khối mã, không gửi trong lúc chờ và tiếp tục khi đến hạn.

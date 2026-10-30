@@ -2,7 +2,7 @@ import json
 import shutil
 import subprocess
 import unittest
-from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS
+from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, _guard_service_limit
 
 
 class WebConnectionTests(unittest.TestCase):
@@ -96,6 +96,34 @@ process.stdout.write(JSON.stringify({result, clicked}));
                 self.assertEqual(value['result']['ok'], bool(clicks))
                 if retry is not None:
                     self.assertEqual(value['result']['retryable'], retry)
+
+    def test_service_cooldown_clock_and_expiration(self):
+        if not shutil.which('node'):
+            self.skipTest('Node.js required')
+        cases = [
+            ('2026-10-30T14:25:00','3:05\u202fPM',True,15,5),
+            ('2026-10-30T15:06:00','3:05 PM',False,None,None),
+            ('2026-10-30T23:59:00','12:10 AM',True,0,10),
+        ]
+        for now, clock, active, hour, minute in cases:
+            with self.subTest(now=now,clock=clock):
+                fixture = r'''
+const NativeDate = Date;
+global.Date = class extends NativeDate {constructor(...args) {super(...(args.length ? args : [NOW]));}};
+global.location = {hostname:'chatgpt.com'};
+global.document = {body:{cloneNode:()=>({querySelectorAll:()=>[],textContent:MESSAGE})}};
+const result = SCRIPT;
+process.stdout.write(JSON.stringify(result));
+'''
+                message = "We're doing a quick check to keep ChatGPT reliable. Try again after " + clock + '.'
+                code = fixture.replace('NOW',json.dumps(now)).replace('MESSAGE',json.dumps(message)).replace('SCRIPT',_guard_service_limit('({passed:true})'))
+                value = json.loads(subprocess.run(['node','-e',code],capture_output=True,text=True,check=True).stdout)
+                self.assertEqual(value.get('cooldown',False),active)
+                if active:
+                    self.assertEqual(value['clock'],f'{hour:02d}:{minute:02d}')
+                    self.assertGreater(value['retryAt'],0)
+                else:
+                    self.assertTrue(value['passed'])
 
     def test_other_domain_does_not_read_messages(self):
         for script in (PROBE_JS, READ_LATEST_RESPONSE_JS):

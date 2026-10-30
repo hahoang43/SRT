@@ -6,6 +6,36 @@ No login automation, CAPTCHA solving, or rate-limit bypass is used.
 Since chatgpt.com can change its HTML, this is best effort only.
 """
 
+_SERVICE_LIMIT_HELPER = r"""
+  const serviceLimit = () => {
+    if (!document.body) return null;
+    const copy = document.body.cloneNode(true);
+    copy.querySelectorAll('script, style, form, textarea, [contenteditable], pre, code, ' +
+      '[data-message-author-role="user"], [data-turn="user"], [hidden], [aria-hidden="true"]')
+      .forEach(el => el.remove());
+    const text = (copy.textContent || '').replace(/\s+/g, ' ');
+    const match = text.match(/we['’]re doing a quick check to keep ChatGPT reliable\.?\s*Try again after\s+(\d{1,2}):(\d{2})\s*([AP]M)/i);
+    if (!match) return null;
+    let hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (hour < 1 || hour > 12 || minute > 59) return {cooldown:true, retryAt:null, clock:'không đọc được giờ'};
+    hour = hour % 12 + (match[3].toUpperCase() === 'PM' ? 12 : 0);
+    const now = new Date();
+    const until = new Date(now);
+    until.setHours(hour, minute, 0, 0);
+    // Interpret a midnight rollover, but never roll a just-expired notice to tomorrow.
+    if (until.getTime() < now.getTime() - 12 * 3600000) until.setDate(until.getDate() + 1);
+    if (until.getTime() <= now.getTime()) return null;
+    return {site:true, cooldown:true, retryAt:until.getTime()/1000,
+      clock:String(hour).padStart(2,'0') + ':' + String(minute).padStart(2,'0')};
+  };
+"""
+
+
+def _guard_service_limit(script: str) -> str:
+    return ("(() => { if (['chatgpt.com','www.chatgpt.com'].includes(location.hostname)) {" +
+            _SERVICE_LIMIT_HELPER + "const limit = serviceLimit(); if (limit) return limit; } return (" + script + "); })()")
+
 # Connection, preparation and send must agree on the actual writable editor.
 _EDITOR_HELPER = r"""
   const normalizeDraft = text => (text || '').replace(/\r\n?/g, '\n').replace(/\n+/g, '\n').trim();
@@ -137,7 +167,7 @@ PROBE_JS = r"""(() => {
 def make_send_message_js(message: str) -> str:
     """Return JavaScript that enters and sends one message in the current chat."""
     import json
-    return r"""(() => {
+    return _guard_service_limit(r"""(() => {
   if (!['chatgpt.com', 'www.chatgpt.com'].includes(location.hostname)) {
     return {ok:false, why:'Trang hiện tại không phải ChatGPT.'};
   }
@@ -165,7 +195,7 @@ def make_send_message_js(message: str) -> str:
   }
   const actual = editor.tagName.toLowerCase() === 'textarea' ? editor.value : editor.innerText;
   return {ok:normalizeDraft(actual) === normalizeDraft(text), prepared:true, why:'Không điền được nội dung lô vào ô chat.'};
-})()""".replace("/*EDITOR_HELPER*/", _EDITOR_HELPER) % json.dumps(message, ensure_ascii=False)
+})()""".replace("/*EDITOR_HELPER*/", _EDITOR_HELPER) % json.dumps(message, ensure_ascii=False))
 
 # React updates send-button state after the input event. Click in a separate
 # invocation, rather than pretending a synthetic Enter was accepted.
@@ -221,3 +251,8 @@ READ_LATEST_RESPONSE_JS = r"""(() => {
     diagnostics:{turns:turns.length, roles:document.querySelectorAll('[data-message-author-role="assistant"]').length,
       conversationChars, fallbackMatches}};
 })()"""
+
+
+PROBE_JS = _guard_service_limit(PROBE_JS)
+SEND_MESSAGE_JS = _guard_service_limit(SEND_MESSAGE_JS)
+READ_LATEST_RESPONSE_JS = _guard_service_limit(READ_LATEST_RESPONSE_JS)

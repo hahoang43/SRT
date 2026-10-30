@@ -3,6 +3,7 @@ import unittest
 import json
 import time
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QEventLoop, QTimer, QCoreApplication, QEvent
@@ -445,6 +446,90 @@ button.onclick = () => {
             window.close()
             window.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_cooldown_notice_detection_in_real_dom_excludes_user_and_code(self):
+        clock = datetime.fromtimestamp(time.time()+120).strftime('%I:%M %p')
+        message = "We're doing a quick check to keep ChatGPT reliable. Try again after " + clock + '.'
+        cases = [('<p role="alert">'+message+'</p>',True),
+                 ('<div data-turn="user">'+message+'</div>',False),
+                 ('<pre>'+message+'</pre>',False),
+                 ('<p hidden>'+message+'</p>',False)]
+        for markup, blocked in cases:
+            with self.subTest(blocked=blocked,markup=markup):
+                window = App()
+                loop = QEventLoop()
+                values = []
+                def received(value):
+                    values.append(value)
+                    loop.quit()
+                def loaded(ok):
+                    if ok:
+                        window._run_web_script(PROBE_JS.replace('window.location.hostname', "'chatgpt.com'").replace('location.hostname', "'chatgpt.com'"), received)
+                    else:
+                        loop.quit()
+                window.web_view.loadFinished.connect(loaded)
+                window.web_view.setHtml(markup+'<textarea id="prompt-textarea"></textarea>')
+                deadline = QTimer()
+                deadline.setSingleShot(True)
+                deadline.timeout.connect(loop.quit)
+                deadline.start(10000)
+                loop.exec()
+                deadline.stop()
+                try:
+                    self.assertEqual(len(values),1)
+                    self.assertEqual(values[0].get('cooldown',False),blocked)
+                    if blocked:
+                        self.assertGreater(values[0]['retryAt'],time.time())
+                    else:
+                        self.assertTrue(values[0]['editor'])
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
+    def test_service_notice_pauses_all_sends_until_deadline_then_resumes(self):
+        window = self.make_session()
+        scripts = []
+        window._run_web_script = lambda script, callback: scripts.append((script,callback))
+        try:
+            window._queue_next_auto_batch()
+            expiry = time.time() + 60
+            scripts[0][1]({'cooldown':True,'retryAt':expiry,'clock':'15:05'})
+            self.assertEqual(window.auto_send_state,'cooldown')
+            self.assertTrue(window.service_wait_timer.isActive())
+            self.assertFalse(window.batch_waiting_for_json)
+            self.assertEqual(len(scripts),1)
+            window._queue_next_auto_batch()
+            window._tick_service_wait()
+            self.assertEqual(len(scripts),1)
+            with patch('app.time.time',return_value=expiry+1):
+                window._tick_service_wait()
+            self.assertFalse(window.service_wait_timer.isActive())
+            self.assertEqual(len(scripts),2)
+            self.assertEqual(scripts[1][0],PROBE_JS)
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
+    def test_stop_cancels_cooldown_resume_and_preserves_translations(self):
+        window = self.make_session()
+        scripts = []
+        window._run_web_script = lambda script, callback: scripts.append(script)
+        try:
+            window.model.cues[0].translation = 'Xin chào'
+            expiry = time.time()+60
+            window._wait_for_service({'cooldown':True,'retryAt':expiry})
+            window.stop_translation()
+            with patch('app.time.time',return_value=expiry+1):
+                window._tick_service_wait()
+            self.assertEqual(scripts,[])
+            self.assertEqual(window.model.cues[0].translation,'Xin chào')
+            self.assertFalse(window.service_wait_timer.isActive())
+        finally:
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
 
     def test_editor_detection_uses_writable_node_not_wrapper_or_disabled_field(self):
         cases = [

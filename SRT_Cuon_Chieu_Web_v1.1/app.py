@@ -108,7 +108,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.2.5 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.2.6 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -141,9 +141,13 @@ class App(QMainWindow):
         self.next_batch_timer = QTimer(self)
         self.next_batch_timer.setSingleShot(True)
         self.next_batch_timer.timeout.connect(self._queue_next_auto_batch)
+        self.service_wait_until = 0.0
+        self.service_wait_timer = QTimer(self)
+        self.service_wait_timer.setInterval(1000)
+        self.service_wait_timer.timeout.connect(self._tick_service_wait)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.2.5 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.2.6 — Sẵn sàng. Mở file SRT để bắt đầu.')
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -378,7 +382,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.2.5\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.2.6\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -565,6 +569,12 @@ class App(QMainWindow):
         self._probe_busy = False
         if original_state != self._connection_state:
             return
+        if isinstance(probe, dict) and probe.get('cooldown'):
+            self._end_connection_test()
+            self._connection_state = 'cooldown'
+            self._status('● ChatGPT đang yêu cầu chờ', '#ab7700')
+            self.web_status.setText('ChatGPT yêu cầu thử lại sau ' + str(probe.get('clock', 'thời gian trên Web')) + '. Bắt đầu dịch sẽ giữ tiến độ và chờ theo thông báo.')
+            return
         if not isinstance(probe, dict) or not probe.get('site'):
             self.web_status.setText('Đang chờ chuyển đến chatgpt.com; có thể đang ở trang đăng nhập.')
             return
@@ -640,7 +650,7 @@ class App(QMainWindow):
         self._queue_next_auto_batch()
 
     def _queue_next_auto_batch(self):
-        if not self.auto_session or self.auto_paused or self.batch_waiting_for_json:
+        if not self.auto_session or self.auto_paused or self.batch_waiting_for_json or self.auto_send_state == 'cooldown':
             return
         if not self._missing():
             self.log('✅ ĐÃ HOÀN TẤT: tất cả ID có bản dịch.')
@@ -670,12 +680,50 @@ class App(QMainWindow):
                 return
             completed = True
             if self.auto_session and self.auto_generation == generation:
-                callback(result)
+                if isinstance(result, dict) and result.get('cooldown'):
+                    self._wait_for_service(result)
+                else:
+                    callback(result)
         def stalled():
             if not completed and self.auto_session and self.auto_generation == generation:
                 current({'scriptError':'QtWebEngine không trả kết quả trong 10 giây.'})
         QTimer.singleShot(10000, stalled)
         self._run_web_script(script, current)
+
+    def _wait_for_service(self, result):
+        retry_at = result.get('retryAt')
+        if (type(retry_at) not in (int, float) or not 0 < retry_at - time.time() <= 86400):
+            self._auto_failed('ChatGPT yêu cầu chờ nhưng chưa xác định được thời điểm thử lại. Bản dịch đã lưu được giữ nguyên; kiểm tra thông báo trên Web.')
+            return
+        self._save_checkpoint()
+        self.auto_generation += 1
+        self.auto_poll_busy = False
+        self.auto_send_state = 'cooldown'
+        self.batch_waiting_for_json = False
+        self.auto_batch = []
+        self.auto_received = None
+        self.next_batch_timer.stop()
+        self.service_wait_until = retry_at
+        self.log('⏳ ChatGPT yêu cầu chờ đến ' + datetime.fromtimestamp(retry_at).strftime('%H:%M') +
+                 '. Giữ tiến độ; không gửi thêm trong thời gian chờ.')
+        self.service_wait_timer.start()
+        self._tick_service_wait()
+
+    def _tick_service_wait(self):
+        if not self.auto_session or self.auto_send_state != 'cooldown':
+            self.service_wait_timer.stop()
+            return
+        remaining = max(0, int(self.service_wait_until - time.time()) + 1)
+        if time.time() >= self.service_wait_until:
+            self.service_wait_timer.stop()
+            self.auto_send_state = 'idle'
+            self.log('Đã đến giờ thử lại do ChatGPT thông báo; tiếp tục các ID còn thiếu khi ô chat sẵn sàng.')
+            if not self.auto_paused:
+                self._queue_next_auto_batch()
+            return
+        self.web_status.setText('ChatGPT yêu cầu chờ đến ' +
+            datetime.fromtimestamp(self.service_wait_until).strftime('%H:%M') +
+            f' — còn {remaining // 60} phút {remaining % 60} giây. Đã giữ tiến độ.')
 
     def _schedule_poll(self, delay=1200):
         generation = self.auto_generation
@@ -921,6 +969,7 @@ class App(QMainWindow):
                 self._queue_next_auto_batch()
 
     def stop_translation(self):
+        self.service_wait_timer.stop()
         self.auto_send_state = 'idle'
         self.auto_received = None
         self.auto_generation += 1
@@ -939,6 +988,7 @@ class App(QMainWindow):
 
 
     def closeEvent(self, event):
+        self.service_wait_timer.stop()
         self.auto_generation += 1
         self.auto_session = False
         self.auto_send_state = 'idle'
