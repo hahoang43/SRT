@@ -1,15 +1,15 @@
-# SRT Cuốn Chiếu v1.6.0
+# SRT Cuốn Chiếu v1.7.0
 
-Ứng dụng Python/PySide6 dịch phụ đề Trung → Việt qua ChatGPT Web, giữ ID và mốc thời gian. Bản này chạy bằng mã Python trong repository; đã gỡ hai module đóng bên ngoài cùng bộ nạp và cấu hình đóng gói liên quan.
+Ứng dụng Python/PySide6 dịch phụ đề Trung → Việt qua ChatGPT Web, giữ ID và mốc thời gian. Bản này dùng mã SRT hiện có và duy nhất module ai_chatgpt.cp312-win_amd64.pyd do người dùng cung cấp. Các thành phần của ứng dụng bên ngoài khác vẫn được gỡ.
 
 ## Cài và chạy trên Windows
 
-1. Cài Python 3.10 trở lên, bản 64-bit; Python 3.12 hiện có vẫn dùng được.
+1. Cài Python 3.12, bản 64-bit, để nạp đúng ABI của module.
 2. Cập nhật repository bằng git pull origin main.
 3. Chạy run_windows.bat để cài PySide6 và mở app.
-4. Tiêu đề phải hiện v1.6.0. Nhật ký khởi động ghi “Đang dùng bộ Web Python/PySide6 tích hợp của ứng dụng SRT.”
+4. Tiêu đề phải hiện v1.7.0. Nhật ký khởi động phải ghi “Đang dùng module ai_chatgpt.pyd do người dùng cung cấp.” Nếu không nạp được, nhật ký báo rõ lý do và dùng bộ Web tích hợp.
 
-File .exe đã build từ bản cũ vẫn chứa mã và thành phần cũ. Muốn dùng bản mới, chạy run_windows.bat hoặc build lại bằng build_exe_windows.bat. Không sao chép thành phần đóng cũ trở lại thư mục ứng dụng.
+File .exe đã build từ bản cũ vẫn chứa mã và thành phần cũ. Muốn dùng bản mới, chạy run_windows.bat hoặc build lại bằng build_exe_windows.bat. Chỉ dùng module đã kèm trong repository; không bổ sung lại module chính của ứng dụng ngoài.
 
 ## Dịch SRT
 
@@ -39,8 +39,14 @@ Dữ liệu đăng nhập vẫn do trang Web xử lý. Hồ sơ QtWebEngine gi�
 
 Từ thư mục SRT_Cuon_Chieu_Web_v1.1:
 
-    python -B -m unittest -v test_engine test_web_connect test_response_capture test_app_web_bridge
+    python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_response_capture test_app_web_bridge
 
 Trên Linux không màn hình, đặt QT_QPA_PLATFORM=offscreen và QT_QUICK_BACKEND=software. Các kiểm thử DOM trong test_web_connect cần Node.js; nếu thiếu sẽ báo skipped. Kiểm thử tích hợp dùng trang HTML cục bộ trên QtWebEngine, không thay thế kiểm tra thực tế với ChatGPT trên Windows.
 
-Chạy build_exe_windows.bat trên Windows để build lại dist/SRT_Cuon_Chieu bằng PyInstaller. Spec chỉ thu thập ứng dụng và thư viện PySide6.
+Chạy build_exe_windows.bat trên Windows để build lại dist/SRT_Cuon_Chieu bằng PyInstaller. Spec thu thập ứng dụng, thư viện PySide6 và duy nhất binary ai_chatgpt đã kèm.
+
+## Module và giới hạn dịch vụ
+
+Module ai_chatgpt cung cấp JavaScript gửi/đọc giao diện, không cấp tài khoản, hạn mức hay mô hình AI riêng. Dùng chế độ khách chỉ khi trang cho phép. Ứng dụng giữ cơ chế nhận biết thông báo chờ, lưu checkpoint và tiếp tục khi đến hạn; không bảo đảm ChatGPT Web không giới hạn hoặc không yêu cầu đăng nhập.
+
+Bản này không nạp module ZK_API_WEB hoặc khởi chạy ZenKun Loader. Binary ai_chatgpt giữ nguyên SHA-256 e1f884cbed7b0a97d8e2d0f85e5e05016933c00aeb999e0d79842587df1be6a5. Kiểm thử Linux kiểm tra lớp tích hợp với API giả lập trên QtWebEngine; cần xác nhận binary thật trên Windows qua nhật ký khởi động.
