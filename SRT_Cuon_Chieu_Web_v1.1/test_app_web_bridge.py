@@ -232,7 +232,14 @@ class WebBridgeTests(unittest.TestCase):
     def test_generic_contenteditable_sends_two_batches(self):
         self._assert_two_batches('<div role="textbox" contenteditable="true"></div>')
 
-    def _assert_two_batches(self, editor_markup):
+    def test_native_adapter_sends_two_batches_without_builtin_double_send(self):
+        from native_chatgpt_bridge import WebBridge
+        from test_native_chatgpt_bridge import FakeHandler
+        bridge = WebBridge(FakeHandler)
+        with patch('app.WEB_BRIDGE',bridge), patch('app.PROBE_JS',bridge.probe_js), patch('app.READ_LATEST_RESPONSE_JS',bridge.read_js):
+            self._assert_two_batches('<textarea id="prompt-textarea"></textarea>', native=True)
+
+    def _assert_two_batches(self, editor_markup, native=False):
         window = App()
         loop = QEventLoop()
         notices = []
@@ -262,7 +269,7 @@ class WebBridgeTests(unittest.TestCase):
 let sent = 0;
 const editor = document.querySelector('textarea, [contenteditable]');
 const button = document.querySelector('button');
-editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, sent === 0 ? 1200 : 2200));
+editor.addEventListener('input', () => setTimeout(() => {button.disabled = false;}, NATIVE_READY ? 100 : (sent === 0 ? 1200 : 2200)));
 button.onclick = () => {
   sent++;
   const turn = document.createElement('article');
@@ -274,7 +281,7 @@ button.onclick = () => {
   if (editor.tagName === 'TEXTAREA') editor.value = ''; else editor.textContent = '';
   button.disabled = true;
 };
-</script>'''
+</script>'''.replace('NATIVE_READY', 'true' if native else 'false')
         def loaded(ok):
             if ok:
                 window.web_panel.show()  # Prevent start_translation from loading a remote page.
@@ -292,7 +299,7 @@ button.onclick = () => {
         loop.exec()
         deadline.stop()
         try:
-            self.assertEqual(failures, [])
+            self.assertEqual(failures, [], window.log_text.toPlainText())
             self.assertEqual([c.translation for c in window.model.cues], ['Xin chào', 'Tạm biệt'])
             self.assertFalse(window.auto_session)
             self.assertEqual(len(notices), 1)

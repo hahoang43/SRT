@@ -31,6 +31,11 @@ from srt_engine import (
     parse_srt, read_text, restore_progress, save_progress, srt_contents,
 )
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js
+from native_chatgpt_bridge import load_web_bridge, NATIVE_SEND_ACK_JS
+
+WEB_BRIDGE = load_web_bridge()
+PROBE_JS = WEB_BRIDGE.probe_js
+READ_LATEST_RESPONSE_JS = WEB_BRIDGE.read_js
 
 
 class CueTableModel(QAbstractTableModel):
@@ -108,7 +113,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.2.6 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.3.0 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -147,7 +152,8 @@ class App(QMainWindow):
         self.service_wait_timer.timeout.connect(self._tick_service_wait)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.2.6 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.3.0 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log(WEB_BRIDGE.status)
 
     def _button(self, text: str, action, kind: str = ''):
         button = QPushButton(text)
@@ -382,7 +388,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.2.6\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.3.0\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -757,7 +763,49 @@ class App(QMainWindow):
         self.auto_dom_chars = None
         self.auto_last_response = ''
         self.auto_stable_reads = 0
-        self._run_batch_script(make_send_message_js(prompt), self._on_batch_prepared)
+        if WEB_BRIDGE.native:
+            try:
+                script = WEB_BRIDGE.send_js(prompt, self.auto_generation)
+            except Exception as error:
+                self._auto_failed('Module ai_chatgpt không tạo được lệnh gửi: ' + str(error))
+                return
+            self.auto_send_state = 'native_pending'
+            self.auto_send_deadline = time.monotonic() + min(30, self.timeout_spin.value())
+            self._run_batch_script(script, self._on_native_queued)
+        else:
+            self._run_batch_script(make_send_message_js(prompt), self._on_batch_prepared)
+
+    def _on_native_queued(self, result):
+        if not isinstance(result, dict) or result.get('ok') is not True:
+            self._auto_failed('Module ai_chatgpt không điền/gửi được lô. Kiểm tra ô chat trên Web.')
+            return
+        self.log('Module ai_chatgpt đã chuẩn bị lô; chờ xác nhận ô nhập được xóa sau khi gửi.')
+        self._schedule_native_ack()
+
+    def _schedule_native_ack(self):
+        generation = self.auto_generation
+        def confirm():
+            if self.auto_session and self.auto_generation == generation and self.auto_send_state == 'native_pending':
+                if time.monotonic() >= self.auto_send_deadline:
+                    self._auto_failed('Module ai_chatgpt chưa gửi được lô trong 30 giây. Không tự gửi lại để tránh trùng; bản dịch đã lưu được giữ nguyên.')
+                    return
+                self._run_batch_script(NATIVE_SEND_ACK_JS, self._on_native_ack)
+        QTimer.singleShot(750, confirm)
+
+    def _on_native_ack(self, result):
+        if not self.auto_session or self.auto_send_state != 'native_pending':
+            return
+        if isinstance(result, dict) and result.get('pending'):
+            self._schedule_native_ack()
+        elif isinstance(result, dict) and result.get('ok'):
+            self.auto_send_state = 'checking'
+            self._on_batch_sent(result)
+        else:
+            self._auto_failed('Không xác nhận được thao tác gửi của ai_chatgpt; không tự gửi lại.')
+
+    def _cancel_native_pending(self):
+        if WEB_BRIDGE.native and self.auto_send_state == 'native_pending' and self.web_view is not None:
+            self.web_view.page().runJavaScript('window.__srtNativeSendId = null;')
 
     def _on_batch_prepared(self, result):
         if not isinstance(result, dict) or not result.get('ok'):
@@ -969,6 +1017,7 @@ class App(QMainWindow):
                 self._queue_next_auto_batch()
 
     def stop_translation(self):
+        self._cancel_native_pending()
         self.service_wait_timer.stop()
         self.auto_send_state = 'idle'
         self.auto_received = None
@@ -988,6 +1037,7 @@ class App(QMainWindow):
 
 
     def closeEvent(self, event):
+        self._cancel_native_pending()
         self.service_wait_timer.stop()
         self.auto_generation += 1
         self.auto_session = False

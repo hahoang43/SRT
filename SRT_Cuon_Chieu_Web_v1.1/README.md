@@ -117,3 +117,13 @@ Trước mỗi lô, chờ editor theo thời gian chờ Web đã đặt, kiểm 
 Đây là cơ chế chờ theo điều kiện dịch vụ, không phải dùng ChatGPT không giới hạn. Không đổi IP, tài khoản hoặc phiên để né giới hạn, không tự vượt xác minh. Kiểm thử cục bộ gồm giờ AM/PM, thông báo đã hết hạn, qua nửa đêm, nhận diện DOM thật, không nhầm lời người dùng/khối mã, không gửi trong lúc chờ và tiếp tục khi đến hạn.
 
 Thông báo yêu cầu chờ có thể nằm bên trong form soạn chat. Bộ nhận diện vẫn đọc phần thông báo này, đồng thời loại nội dung textarea/contenteditable để không nhầm văn bản đang nhập với yêu cầu của dịch vụ.
+
+### v1.3.0: Dùng module ai_chatgpt do người dùng cung cấp
+
+Đã kèm `ai_chatgpt.cp312-win_amd64.pyd` nguyên bản (SHA-256 `e1f884cbed7b0a97d8e2d0f85e5e05016933c00aeb999e0d79842587df1be6a5`). `run_windows.bat` yêu cầu Python **3.12 64-bit**. Trên Windows đúng phiên bản, ứng dụng nạp `ChatGPTHandler`, dùng `get_send_js` và `get_read_js`. Nhật ký lúc mở ứng dụng phải ghi **“Đang dùng module ai_chatgpt.pyd do người dùng cung cấp.”** Nếu không nạp được, nhật ký ghi rõ lý do và dùng bộ Web tích hợp; không coi đó là đã chạy module.
+
+Lớp tích hợp chuyển chuỗi JSON `text/is_generating` của module sang giao thức hiện có, giữ bộ đọc dự phòng và các kiểm tra ID/số dòng/checkpoint. Chỉ gọi thao tác gửi của module một lần, chờ ô nhập được xóa để xác nhận thao tác rồi đọc phản hồi; không bấm thêm nút gửi của bộ tích hợp. Đóng/Dừng hủy callback gửi trễ còn chờ. Nội dung phụ đề được truyền qua biến JSON thay vì chèn trực tiếp vào template literal của module.
+
+`build_exe_windows.bat` dùng Python 3.12 và spec kèm binary vào bản đóng gói. Không nén UPX để giữ đúng checksum. Bản `.exe` cũ không tự nhận thay đổi: chạy mã nguồn hoặc build lại trên Windows.
+
+Linux và Python khác phiên bản vẫn dùng bộ Web tích hợp để phát triển. Kiểm thử bằng `python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_app_web_bridge`. Kiểm thử Linux xác minh định dạng/checksum binary, điều kiện nạp và lớp tích hợp bằng API giả lập trên QtWebEngine; chưa thực thi binary Windows hoặc xác minh bản đóng gói `.exe`. Module này không loại bỏ giới hạn hoặc yêu cầu đăng nhập do ChatGPT áp dụng.
