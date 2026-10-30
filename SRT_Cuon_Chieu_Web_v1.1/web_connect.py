@@ -268,3 +268,15 @@ READ_LATEST_RESPONSE_JS = r"""(() => {
 PROBE_JS = _guard_service_limit(PROBE_JS)
 SEND_MESSAGE_JS = _guard_service_limit(SEND_MESSAGE_JS)
 READ_LATEST_RESPONSE_JS = _guard_service_limit(READ_LATEST_RESPONSE_JS)
+
+
+REVEAL_EDITOR_JS = _guard_service_limit(r"""(() => {
+  if (!['chatgpt.com','www.chatgpt.com'].includes(location.hostname))
+    return {ok:false, why:'Trang hiện tại không phải ChatGPT.'};
+  /*EDITOR_HELPER*/
+  const editor=findChatEditor();
+  if (!editor) return {ok:false,why:'Trang hiện tại không còn ô chat có thể nhập.'};
+  editor.scrollIntoView({behavior:'instant',block:'center'});
+  editor.focus({preventScroll:true});
+  return {ok:true};
+})()""".replace('/*EDITOR_HELPER*/', _EDITOR_HELPER))

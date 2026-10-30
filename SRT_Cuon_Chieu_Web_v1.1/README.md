@@ -143,3 +143,11 @@ Lớp tích hợp trước đây cho module gọi thao tác gửi sau 400 ms, nh
 Việc xác nhận dùng cả ô nhập đã xóa sau thao tác và số lần xuất hiện của chính prompt mới trong vùng hội thoại (loại trừ nội dung ô soạn thảo). Vì vậy prompt còn trong ô nhập không tự động bị coi là chưa gửi nếu đã thấy yêu cầu mới được đăng. Phản hồi/yêu cầu cũ có sẵn trước thao tác không được tính làm xác nhận. Dừng, đóng hoặc bắt đầu chờ giới hạn sẽ hủy callback còn chờ. Nhật ký ghi lý do chờ và cách xác nhận để phân biệt nút chưa bật với đã bấm nhưng chưa được trang tiếp nhận.
 
 Kiểm thử dùng giao thức module giả lập trên QtWebEngine: nút chỉ bật sau 1,2–2,2 giây và trường hợp yêu cầu đã được đăng nhưng draft chưa xóa. Chưa xác minh trực tiếp với binary trong phiên Windows của người dùng. Nếu trang luôn vô hiệu hóa nút gửi hoặc không nhận yêu cầu, ứng dụng vẫn dừng và giữ tiến độ; bản sửa không bỏ qua yêu cầu chờ của dịch vụ.
+
+### v1.3.3: Không cuộn/chọn toàn trang khi dùng module
+
+Bộ đọc của module có thao tác tự cuộn đến câu trả lời mỗi lần đọc. Lớp tích hợp bỏ thao tác này để không tự thay đổi vị trí nhìn của người dùng. Bộ gửi được giới hạn vào editor thực sự có thể nhập: thay lệnh selectAll toàn trang bằng Range chỉ bao nội dung ô chat, và kiểm tra focus trước khi chèn văn bản. File `.pyd` gốc vẫn giữ nguyên.
+
+Nút **Hiện ô chat** dừng phiên hiện tại, rồi cuộn/focus ô nhập nếu nó vẫn tồn tại. Nếu trang không còn editor, ứng dụng báo rõ và hướng dẫn nhấn **⟳**; không chèn ô nhập giả hoặc tự sửa giao diện ChatGPT. Tải lại Web cũng dừng phiên trước để hủy callback gửi cũ, giữ checkpoint và dùng lại hồ sơ trình duyệt. Sau khi ô chat đã hiện, bấm Bắt đầu để tiếp tục các ID còn thiếu.
+
+Khi chưa thấy editor, trạng thái kết nối chuyển sang chờ thay vì vẫn báo sẵn sàng. Không thể xác nhận nguyên nhân biến mất editor trên máy Windows chỉ từ ảnh; nếu ChatGPT không render ô nhập hoặc đang yêu cầu chờ/xác minh thì cần xử lý trạng thái thực tế của dịch vụ.

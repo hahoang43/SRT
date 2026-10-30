@@ -51,6 +51,8 @@ class WebBridge:
         self.read_js = builtin.READ_LATEST_RESPONSE_JS
         if self.native:
             native_read = _script(handler.get_read_js())
+            native_read = re.sub(r'targetNode\.scrollIntoView\([^;]*\);', '', native_read)
+            native_read = re.sub(r'box\.scrollTop\s*=\s*box\.scrollHeight\s*;', '', native_read)
             self.probe_js = self._reader(builtin.PROBE_JS, native_read, probe=True)
             self.read_js = self._reader(builtin.READ_LATEST_RESPONSE_JS, native_read)
 
@@ -96,6 +98,16 @@ class WebBridge:
         native, replaced = re.subn(pattern, lambda match: match[1] + 'window.__srtOutboundPrompt', native, count=1)
         if replaced != 1:
             raise ValueError('Định dạng get_send_js không khớp module đã kiểm tra.')
+        native = re.sub(r'\bconst\s+input\s*=\s*document\.querySelector[\s\S]*?;',
+                        'const input = findChatEditor();', native, count=1)
+        safe_selection = """if (!input.isConnected || !(document.activeElement === input || input.contains(document.activeElement))) return false;
+          const selection = window.getSelection();
+          if (!selection) return false;
+          const range = document.createRange();
+          range.selectNodeContents(input);
+          selection.removeAllRanges(); selection.addRange(range);"""
+        native = re.sub(r"document\.execCommand\(\s*['\"]selectAll['\"]\s*,\s*false\s*,\s*null\s*\)\s*;",
+                        lambda _: safe_selection, native)
         native = native.replace('input.innerHTML = `<p>${text}</p>`;', 'input.textContent = text;')
         native = re.sub(r'\bconst\s+sendBtn\s*=\s*document\.querySelector[\s\S]*?;',
                         'const sendBtn = window.__srtNativeReadyButton;', native, count=1)

@@ -30,7 +30,7 @@ from srt_engine import (
     Cue, DEFAULT_PROMPT, check_translations, extract_json, make_batch_prompt,
     parse_srt, read_text, restore_progress, save_progress, srt_contents,
 )
-from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js
+from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js, REVEAL_EDITOR_JS
 from native_chatgpt_bridge import load_web_bridge, NATIVE_SEND_ACK_JS
 from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
 
@@ -114,7 +114,7 @@ class CueTableModel(QAbstractTableModel):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('DỊCH SRT WEB v1.3.2 — ChatGPT Web | Cuốn chiếu tự động')
+        self.setWindowTitle('DỊCH SRT WEB v1.3.3 — ChatGPT Web | Cuốn chiếu tự động')
         self.resize(1640, 910)
         self.path: Path | None = None
         self.source_content = ''
@@ -153,7 +153,7 @@ class App(QMainWindow):
         self.service_wait_timer.timeout.connect(self._tick_service_wait)
         self._build_ui()
         self._style()
-        self.log('SRT WEB v1.3.2 — Sẵn sàng. Mở file SRT để bắt đầu.')
+        self.log('SRT WEB v1.3.3 — Sẵn sàng. Mở file SRT để bắt đầu.')
         self.log(WEB_BRIDGE.status)
 
     def _button(self, text: str, action, kind: str = ''):
@@ -322,6 +322,7 @@ class App(QMainWindow):
         web_layout = QVBoxLayout(self.web_panel)
         web_heading = QHBoxLayout()
         web_heading.addWidget(QLabel('CHATGPT WEB — KẾT NỐI & DỊCH TỰ ĐỘNG'), 1)
+        web_heading.addWidget(self._button('Hiện ô chat', self.reveal_chat_editor))
         web_heading.addWidget(self._button('⟳', self.reload_web))
         web_heading.addWidget(self._button('✕', self.toggle_web))
         web_layout.addLayout(web_heading)
@@ -389,7 +390,7 @@ class App(QMainWindow):
         self.log_text.appendPlainText(datetime.now().strftime('%H:%M:%S') + '  ' + text)
 
     def copy_log(self):
-        QApplication.clipboard().setText('SRT WEB v1.3.2\n' + self.log_text.toPlainText())
+        QApplication.clipboard().setText('SRT WEB v1.3.3\n' + self.log_text.toPlainText())
 
     def show_notice(self, message: str):
         QMessageBox.information(self, 'Thông báo', message)
@@ -611,8 +612,30 @@ class App(QMainWindow):
         else:
             self.splitter.setSizes([950, 490, 0])
 
+    def reveal_chat_editor(self):
+        if self.web_view is None:
+            return
+        if self.auto_session:
+            self.stop_translation()
+            self.log('Đã dừng phiên để kiểm tra ô chat; giữ các dòng đã dịch.')
+        def revealed(result):
+            if isinstance(result, dict) and result.get('cooldown'):
+                self.web_status.setText('ChatGPT đang yêu cầu chờ đến ' + str(result.get('clock', 'giờ trên Web')))
+            elif isinstance(result, dict) and result.get('ok'):
+                self.web_status.setText('Đã đưa ô chat vào vùng nhìn thấy. Có thể bấm Bắt đầu để tiếp tục phần còn thiếu.')
+                self._status('● Đã tìm thấy ô chat', '#168b50')
+            else:
+                self.web_status.setText('Không tìm thấy ô nhập trong trang. Nhấn ⟳ để tải lại Web với hồ sơ hiện có; tiến độ đã dịch được giữ nguyên.')
+                self._status('● Chưa thấy ô chat', '#ab7700')
+        self._run_web_script(REVEAL_EDITOR_JS, revealed)
+
     def reload_web(self):
         if self.web_view:
+            if self.auto_session:
+                self.stop_translation()
+                self.log('Đã dừng phiên trước khi tải lại Web; giữ tiến độ và hồ sơ trình duyệt.')
+            self._connection_state = 'idle'
+            self._status('◌ Đang tải lại Web…', '#ab7700')
             self.web_view.reload()
 
     def _web_loaded_callback(self, loaded: bool):
@@ -751,6 +774,7 @@ class App(QMainWindow):
             if time.monotonic() >= self.auto_editor_deadline:
                 self._auto_failed('Hết thời gian chờ ô chat có thể nhập. Đăng nhập không bảo đảm giao diện đã sẵn sàng; kiểm tra trang đã tải xong, đóng hộp thoại trên Web hoặc xem thông báo của trang. Bản dịch đã lưu được giữ nguyên.')
                 return
+            self._status('◌ Chưa thấy ô chat sẵn sàng', '#ab7700')
             self.web_status.setText('Đang chờ giao diện ChatGPT và ô chat sẵn sàng…')
             if not self.auto_editor_wait_logged:
                 self.log('◌ Đang chờ ô chat có thể nhập; chưa gửi lô và chưa kết luận lỗi đăng nhập.')
@@ -761,6 +785,7 @@ class App(QMainWindow):
                     self._run_batch_script(PROBE_JS, lambda value: self._on_batch_probe(value, prompt))
             QTimer.singleShot(750, probe_again)
             return
+        self._status('● Ô chat ChatGPT đã sẵn sàng', '#168b50')
         self.auto_baseline = int(result.get('assistantCount') or 0)
         self.auto_baseline_text = result.get('lastText', '')
         self.auto_dom_chars = None
