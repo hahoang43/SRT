@@ -5,6 +5,7 @@ The translation flow reads the latest assistant text only to validate its JSON.
 No login automation, CAPTCHA solving, or rate-limit bypass is used.
 Since chatgpt.com can change its HTML, this is best effort only.
 """
+from web_state import guard_web_state
 
 _SERVICE_LIMIT_HELPER = r"""
   const serviceLimit = () => {
@@ -33,7 +34,7 @@ _SERVICE_LIMIT_HELPER = r"""
 
 
 def _guard_service_limit(script: str) -> str:
-    return ("(() => { if (['chatgpt.com','www.chatgpt.com'].includes(location.hostname)) {" +
+    return guard_web_state("(() => { if (['chatgpt.com','www.chatgpt.com'].includes(location.hostname)) {" +
             _SERVICE_LIMIT_HELPER + "const limit = serviceLimit(); if (limit) return limit; } return (" + script + "); })()")
 
 # Connection, preparation and send must agree on the actual writable editor.

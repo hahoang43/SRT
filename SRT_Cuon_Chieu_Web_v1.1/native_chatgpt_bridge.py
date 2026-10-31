@@ -10,6 +10,7 @@ import struct
 import sys
 
 import web_connect as builtin
+from web_state import WEB_BLOCK_JS
 
 NATIVE_FILE = 'ai_chatgpt.cp312-win_amd64.pyd'
 NATIVE_SHA256 = 'e1f884cbed7b0a97d8e2d0f85e5e05016933c00aeb999e0d79842587df1be6a5'
@@ -126,6 +127,8 @@ class WebBridge:
           window.__srtNativeTimeout = (callback, delay) => {
             const check = () => {
               if (window.__srtNativeSendId!==requestId || state.invoked) return;
+              const block = (BLOCK_CHECK);
+              if (block) {state.failed=true;state.reason=block.why;return;}
               if (Date.now()>=state.until) {state.reason='Hết thời gian chờ nút gửi của module.';return;}
               if (postedPromptCount()>state.before) {state.invoked=true;state.reason='Đã thấy yêu cầu mới trong hội thoại.';return;}
               const editor=findChatEditor();
@@ -157,7 +160,7 @@ class WebBridge:
           const value = (NATIVE);
           return {ok:value === true, nativeQueued:true};
         })()"""
-        script = _substitute(script, NATIVE=native, MESSAGE=json.dumps(message, ensure_ascii=False), REQUEST_ID=str(int(request_id)), HELPERS=builtin._EDITOR_HELPER+builtin._SEND_CONTROL_HELPER+_POSTED_PROMPT_HELPER)
+        script = _substitute(script, NATIVE=native, MESSAGE=json.dumps(message, ensure_ascii=False), REQUEST_ID=str(int(request_id)), HELPERS=builtin._EDITOR_HELPER+builtin._SEND_CONTROL_HELPER+_POSTED_PROMPT_HELPER, BLOCK_CHECK=WEB_BLOCK_JS)
         return builtin._guard_service_limit(script)
 
 

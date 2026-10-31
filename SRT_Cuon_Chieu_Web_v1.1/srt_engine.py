@@ -172,6 +172,22 @@ def extract_json(value: str) -> dict:
     return result
 
 
+def is_truncated_translation(text: str) -> bool:
+    """Recognize an unfinished translation object, not arbitrary invalid prose/JSON."""
+    match = re.search(r'\{\s*"items"\s*:\s*\[', text)
+    if not match:
+        return False
+    value = text[match.start():].rstrip().removesuffix('```').rstrip()
+    try:
+        json.loads(value)
+    except json.JSONDecodeError as error:
+        # An unfinished string, or an expected delimiter/value at EOF, is
+        # evidence of clipping. Syntax errors earlier in the object are not.
+        return (error.msg.startswith('Unterminated string') or
+                error.pos >= len(value))
+    return False
+
+
 def make_batch_prompt(cues: list[Cue], custom_prompt: str) -> str:
     payload = [{'id': cue.number, 'zh': cue.source} for cue in cues]
     return (

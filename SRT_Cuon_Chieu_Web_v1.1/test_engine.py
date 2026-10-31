@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from srt_engine import (
     parse_srt, check_translations, srt_contents, save_progress, restore_progress,
-    extract_json, make_batch_prompt,
+    extract_json, make_batch_prompt, is_truncated_translation,
 )
 
 SRC = '''1\n00:00:01,000 --> 00:00:02,000\n你好\n\n2\n00:00:02,300 --> 00:00:05,900 X1:5 X2:9\n别担心\n我帮你\n'''
@@ -60,6 +60,14 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(obj, {'items': []})
         self.assertIn('DỮ LIỆU JSON:', make_batch_prompt(parse_srt(SRC), 'Dịch tự nhiên'))
         with self.assertRaises(ValueError): parse_srt('invalid srt')
+
+    def test_truncation_requires_unfinished_translation_json(self):
+        for text in ('{"items":[', '{"items":[{"id":1,"vi":"Chào',
+                     '```json\n{"items":[{"id":1,"vi":"Chào"}'):
+            self.assertTrue(is_truncated_translation(text), text)
+        for text in ('not JSON', '{"items":[?}', '{"items":[]}',
+                     '{"items":[{"id":1 "vi":"bad"}]}'):
+            self.assertFalse(is_truncated_translation(text), text)
 
 if __name__ == '__main__':
     unittest.main()

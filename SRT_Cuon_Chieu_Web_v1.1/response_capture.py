@@ -88,7 +88,7 @@ def with_reply_capture(script, cues, request_id):
 def read_with_capture(script, request_id):
     return _guard_service_limit(r"""(() => {
       const result=(SCRIPT);
-      if (!result || !result.site || result.cooldown) return result;
+      if (!result || !result.site || result.cooldown || result.blocked) return result;
       const capture=window.__srtReplyCapture;
       const active=!!capture && capture.requestId===REQUEST_ID;
       const diagnostics={...result.diagnostics,captureInstalled:active,capturedReplies:active ? capture.matches : 0};

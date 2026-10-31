@@ -34,7 +34,7 @@ Cookie Gemini lưu trong `gemini_profile`, tách khỏi `chatgpt_profile`; chuy�
 
 Gemini dùng REST qua HTTPS tới `generativelanguage.googleapis.com`, gửi key trong header `x-goog-api-key`, không đưa key vào URL và không chuyển hướng yêu cầu. Cần Internet và quyền truy cập domain này qua firewall/proxy. Chỉ phụ đề và prompt được gửi; timestamp được giữ ở máy. Không cần cài SDK Gemini hoặc tải mô hình. Chế độ Gemini không nạp binary ChatGPT và không tự chuyển bộ dịch khi có lỗi.
 
-Nếu sai key/quyền, hết quota (HTTP 429), mất mạng, hết thời gian, nội dung bị chặn hoặc phản hồi chưa hoàn tất: phiên dừng, giữ checkpoint và báo lỗi; **không tự gửi lại yêu cầu API lỗi**. Kiểm tra key/quota/mô hình, chờ nếu cần rồi bấm Bắt đầu để tiếp tục phần còn thiếu. Với phản hồi hoàn tất nhưng sai JSON/ID/số dòng, các ID hợp lệ được giữ và chỉ ID chưa hợp lệ được thử lại riêng tối đa hai lần; các lần này cũng tiêu thụ quota. Bản dịch bị cắt giữa chừng không được nhập.
+Nếu sai key/quyền, hết quota (HTTP 429), mất mạng, hết thời gian hoặc nội dung bị chặn: phiên dừng, giữ checkpoint và báo lỗi; **không tự gửi lại yêu cầu API lỗi**. Kiểm tra key/quota/mô hình, chờ nếu cần rồi bấm Bắt đầu để tiếp tục phần còn thiếu. Riêng phản hồi HTTP thành công có `finishReason=MAX_TOKENS` được bỏ và thử lại với lô nhỏ hơn theo cơ chế bên dưới. Với phản hồi hoàn tất nhưng sai JSON/ID/số dòng, các ID hợp lệ được giữ và chỉ ID chưa hợp lệ được thử lại riêng tối đa hai lần; các lần này cũng tiêu thụ quota. Bản dịch bị cắt giữa chừng không được nhập.
 
 ## Dịch SRT
 
@@ -56,6 +56,13 @@ Nút “Hiện ô chat” dừng phiên rồi cuộn tới ô nhập còn tồn 
 
 ## ChatGPT Web và giới hạn
 
+### Xác minh truy cập và tự giảm lô
+
+- ChatGPT Web và Gemini Web kiểm tra trạng thái DOM trước khi chuẩn bị/gửi/đọc phản hồi; nút gửi bị vô hiệu hóa hoặc nút Stop còn hiện thì tiếp tục chờ bằng timer, không gửi lô mới. Phiên Web cũng theo dõi chuyển trang, HTTP 403 và challenge xuất hiện trong lúc chờ.
+- Khi phát hiện Cloudflare/CAPTCHA, HTTP 403 hoặc thông báo hết hạn mức không có giờ chờ được nhận diện, ứng dụng ngừng phiên, hủy thao tác gửi đang chờ và lưu checkpoint. Cookie, cache, hồ sơ và địa chỉ IP được giữ nguyên. Xử lý thông báo/xác minh trực tiếp trên Web, kiểm tra kết nối rồi bấm **Bắt đầu** để tiếp tục các ID còn thiếu. Ứng dụng không giả mạo fingerprint, xoay proxy hoặc xóa phiên để vượt giới hạn.
+- Khi Web đã ngừng tạo và JSON dịch vẫn bị cắt ở cuối, hoặc Gemini API báo `MAX_TOKENS`, ứng dụng bỏ đầu ra dở, giảm số ID/lô còn một nửa (làm tròn xuống, tối thiểu 1) và thử lại phần chưa dịch sau thời gian nghỉ đã chọn. Giới hạn lô nhỏ hơn áp dụng đến hết phiên; giá trị “Dòng / lần” là mức trần người dùng đặt. Nếu lô 1 ID vẫn bị cắt thì dừng, giữ tiến độ và báo lỗi. Các lần thử lại API có thể tiêu thụ quota.
+- Không chia nhỏ/thử lại để xử lý CAPTCHA, 403, 429, lỗi mạng, timeout hoặc phản hồi bị chặn. Phát hiện DOM là best effort và không thay thế kiểm tra dịch vụ thật; thông báo/HTML mới có thể cần cập nhật bộ nhận diện.
+
 ChatGPT Web là dịch vụ bên ngoài; giao diện có thể thay đổi. Có thể dùng chế độ khách khi trang cho phép; khi dịch vụ yêu cầu đăng nhập, xác minh hoặc chờ, ứng dụng không thể bỏ qua. Thông báo “Try again after H:MM AM/PM” được nhận diện để giữ tiến độ, đếm ngược và thử tiếp khi đến giờ.
 
 Dữ liệu đăng nhập vẫn do trang Web xử lý. Hồ sơ QtWebEngine giữ cookie trong thư mục dữ liệu ứng dụng. Không tự xóa hồ sơ/cookie khi cập nhật. Đăng xuất trong Web nếu dùng chung máy.
@@ -64,7 +71,7 @@ Dữ liệu đăng nhập vẫn do trang Web xử lý. Hồ sơ QtWebEngine gi�
 
 Từ thư mục SRT_Cuon_Chieu_Web_v1.1:
 
-    python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_gemini_backend test_app_gemini test_gemini_web test_response_capture test_app_web_bridge
+    python -B -m unittest -v test_engine test_web_connect test_native_chatgpt_bridge test_gemini_backend test_app_gemini test_gemini_web test_response_capture test_app_web_bridge test_web_state
 
 Trên Linux không màn hình, đặt QT_QPA_PLATFORM=offscreen và QT_QUICK_BACKEND=software. Các kiểm thử DOM trong test_web_connect cần Node.js; nếu thiếu sẽ báo skipped. Kiểm thử Gemini dùng máy chủ HTTP cục bộ giả lập REST API: Unicode, header key, phân trang mô hình, lỗi key/quota, hủy yêu cầu, timeout, phản hồi bị chặn/cắt, thử lại ID sai, checkpoint và xuất SRT. Không cần API key thật và không phát sinh yêu cầu tới Google; các test này không xác nhận quota, chất lượng dịch hoặc quyền gọi mô hình của một tài khoản thật. Kiểm thử Web dùng HTML cục bộ trên QtWebEngine: Gemini có kiểm tra gửi một lần, không gửi bản nháp bị sửa, chỉ đọc model-response, tách hồ sơ/cửa sổ đăng nhập và dịch nhiều lô vào checkpoint. Chưa thay thế kiểm tra đăng nhập và dịch thực tế với ChatGPT/Gemini trên Windows.
 

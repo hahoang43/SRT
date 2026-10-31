@@ -29,13 +29,14 @@ except ImportError:
 
 from srt_engine import (
     Cue, DEFAULT_PROMPT, check_translations, extract_json, make_batch_prompt,
-    parse_srt, read_text, restore_progress, save_progress, srt_contents,
+    parse_srt, read_text, restore_progress, save_progress, srt_contents, is_truncated_translation,
 )
 from web_connect import PROBE_JS, READ_LATEST_RESPONSE_JS, SEND_MESSAGE_JS, make_send_message_js, REVEAL_EDITOR_JS
 from native_chatgpt_bridge import WebBridge, load_web_bridge, NATIVE_SEND_ACK_JS, RESUME_NATIVE_WAIT_JS
 from response_capture import with_reply_capture, read_with_capture, STOP_CAPTURE_JS
 from gemini_backend import GeminiClient, DEFAULT_MODEL, api_key, model_name
 import gemini_web
+from web_state import WEB_BLOCK_JS
 
 WEB_BRIDGE = WebBridge()
 _native_checked = False
@@ -128,6 +129,7 @@ class App(QMainWindow):
         self.gemini = GeminiClient(self)
         self.gemini.models_ready.connect(self._gemini_models_ready)
         self.gemini.translated.connect(self._on_gemini_response)
+        self.gemini.truncated.connect(self._on_gemini_truncated)
         self.gemini.failed.connect(self._gemini_failed)
         self.auto_api_key = ''
         self.prompt = self.settings.value('prompt', DEFAULT_PROMPT, type=str) or DEFAULT_PROMPT
@@ -155,6 +157,7 @@ class App(QMainWindow):
         self.auto_stable_reads = 0
         self.auto_generation = 0
         self.auto_retries = {}
+        self.auto_batch_limit = 150
         self.auto_recovery_counts = {}
         self.auto_recovering = False
         self.auto_last_error = ''
@@ -168,6 +171,9 @@ class App(QMainWindow):
         self.service_wait_timer = QTimer(self)
         self.service_wait_timer.setInterval(1000)
         self.service_wait_timer.timeout.connect(self._tick_service_wait)
+        self.web_state_timer = QTimer(self)
+        self.web_state_timer.setInterval(1000)
+        self.web_state_timer.timeout.connect(self._monitor_web_state)
         self._build_ui()
         self._style()
         self._on_backend_changed()
@@ -411,6 +417,7 @@ class App(QMainWindow):
             self.web_page = QWebEnginePage(self.web_profile, self.web_view)
             self.web_view.setPage(self.web_page)
             view = self.web_view
+            self._watch_web_view(view)
             view.loadFinished.connect(lambda ok: self._web_loaded_callback(ok) if self.web_view is view else None)
             self.web_stack.addWidget(view)
             self._web_contexts['web'] = (view, self.web_profile, self.web_page)
@@ -615,6 +622,7 @@ class App(QMainWindow):
             view = QWebEngineView()
             page = QWebEnginePage(profile, view)
             view.setPage(page)
+            self._watch_web_view(view)
             page.newWindowRequested.connect(lambda request: self._open_web_popup(request, profile))
             view.loadFinished.connect(lambda ok: self._web_loaded_callback(ok) if self.web_view is view else None)
             self.web_stack.addWidget(view)
@@ -647,6 +655,47 @@ class App(QMainWindow):
         self._loaded_providers.add(self._web_provider)
         self.web_view.setUrl(QUrl(url))
         self.log(f'Đang tải trang {self._web_name()} (đăng nhập trực tiếp trên Web nếu được yêu cầu).')
+
+    def _watch_web_view(self, view):
+        view.urlChanged.connect(lambda url: self._web_navigation_changed(view, url))
+        view.page().loadingChanged.connect(lambda info: self._web_loading_changed(view, info))
+
+    def _web_navigation_changed(self, view, url):
+        if view is not self.web_view or self._uses_gemini():
+            return
+        if (url.host() == 'challenges.cloudflare.com' or
+                url.path().startswith('/cdn-cgi/challenge-platform/')):
+            self._pause_for_web_block({'why': 'Trang đang yêu cầu xác minh Cloudflare.'})
+
+    def _web_loading_changed(self, view, info):
+        if view is self.web_view and not self._uses_gemini() and info.errorCode() == 403:
+            self._pause_for_web_block({'why': 'HTTP 403: dịch vụ từ chối truy cập.'})
+
+    def _monitor_web_state(self):
+        if not self.auto_session or self._uses_gemini():
+            return
+        generation = self.auto_generation
+        def checked(result):
+            if (self.auto_session and self.auto_generation == generation and
+                    isinstance(result, dict) and result.get('blocked')):
+                self._pause_for_web_block(result)
+        self._run_web_script(WEB_BLOCK_JS, checked)
+
+    def _pause_for_web_block(self, result):
+        # Invalidate all queued callbacks and pending native sends. Restart is
+        # manual so a challenge cannot cause an automatic resend of a sent batch.
+        if not self.auto_session and self._connection_state != 'looking_for_editor':
+            return
+        if self.auto_session:
+            self.stop_translation()
+        self._end_connection_test()
+        self._connection_state = 'blocked'
+        message = (result.get('why', 'Trang yêu cầu kiểm tra truy cập.') +
+                   ' Đã giữ tiến độ và hồ sơ đăng nhập. Xử lý thông báo trên Web, '
+                   'kiểm tra kết nối rồi bấm Bắt đầu để tiếp tục các ID còn thiếu.')
+        self._status('● Web đang yêu cầu xử lý', '#ab7700')
+        self.web_status.setText(message)
+        self.log('⏸ ' + message)
 
     def _on_backend_changed(self):
         was_showing_web = not self.web_panel.isHidden()
@@ -786,6 +835,30 @@ class App(QMainWindow):
             return
         self._accept_batch(mapping)
 
+    def _on_gemini_truncated(self):
+        if self.auto_session and self._uses_gemini() and self.batch_waiting_for_json:
+            self._shrink_truncated_batch()
+
+    def _shrink_truncated_batch(self):
+        size = len(self.auto_batch)
+        if size <= 1:
+            self._auto_failed('Phản hồi vẫn bị cắt ở lô 1 ID. Đã giữ tiến độ; kiểm tra giới hạn đầu ra hoặc chọn mô hình khác trước khi tiếp tục.')
+            return
+        self._stop_reply_capture()
+        self.auto_batch_limit = min(self.auto_batch_limit, max(1, size // 2))
+        self.auto_generation += 1
+        self.auto_poll_busy = False
+        self.auto_received = None
+        self.auto_send_state = 'idle'
+        self.batch_waiting_for_json = False
+        self.auto_batch = []
+        self.log(f'⚠ Phản hồi bị cắt; bỏ dữ liệu dở và giảm lô {size} → {self.auto_batch_limit} ID. Chỉ gửi lại các ID còn thiếu sau thời gian nghỉ.')
+        self.web_status.setText(f'Đã giảm lô còn {self.auto_batch_limit} ID do phản hồi bị cắt.')
+        if self._uses_gemini():
+            self.gemini_status.setText(f'Phản hồi bị cắt. Thử lại với tối đa {self.auto_batch_limit} ID/lô sau thời gian nghỉ.')
+        self._save_checkpoint()
+        self.next_batch_timer.start(max(0, self.delay_spin.value() * 1000))
+
     def connect_and_open(self):
         """Check that ChatGPT Web and its chat editor are ready."""
         if self._uses_gemini():
@@ -859,6 +932,9 @@ class App(QMainWindow):
     def _on_probe(self, probe, original_state: str):
         self._probe_busy = False
         if original_state != self._connection_state:
+            return
+        if isinstance(probe, dict) and probe.get('blocked'):
+            self._pause_for_web_block(probe)
             return
         if isinstance(probe, dict) and probe.get('cooldown'):
             self._end_connection_test()
@@ -965,6 +1041,7 @@ class App(QMainWindow):
         else:
             self._ensure_web_bridge()
         self.auto_retries = {}
+        self.auto_batch_limit = self.batch_spin.value()
         self.auto_recovery_counts = {}
         self.auto_recovering = False
         self.auto_session = True
@@ -975,6 +1052,8 @@ class App(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.open_btn.setEnabled(False)
         self._update_gemini_controls()
+        if not self._uses_gemini():
+            self.web_state_timer.start()
         if not self._uses_gemini() and self.web_panel.isHidden():
             self.toggle_web()
         engine = 'Gemini API ' + self.auto_api_model if self._uses_gemini() else self._web_name() + ' Web'
@@ -993,7 +1072,8 @@ class App(QMainWindow):
         self.auto_recovery_counts = {}
         self.auto_recovering = False
         self.auto_received = None
-        size = 1 if self._missing()[0].number in self.auto_retries else self.batch_spin.value()
+        size = (1 if self._missing()[0].number in self.auto_retries else
+                min(self.batch_spin.value(), self.auto_batch_limit))
         self.auto_batch = self._missing()[:size]
         self.batch_waiting_for_json = True
         prompt = make_batch_prompt(self.auto_batch, self.prompt)
@@ -1023,7 +1103,9 @@ class App(QMainWindow):
                 return
             completed = True
             if self.auto_session and self.auto_generation == generation:
-                if isinstance(result, dict) and result.get('cooldown'):
+                if isinstance(result, dict) and result.get('blocked'):
+                    self._pause_for_web_block(result)
+                elif isinstance(result, dict) and result.get('cooldown'):
                     self._wait_for_service(result)
                 else:
                     callback(result)
@@ -1348,6 +1430,9 @@ class App(QMainWindow):
         try:
             parsed = extract_json(text)
         except (ValueError, TypeError) as exc:
+            if not generating and is_truncated_translation(text):
+                self._shrink_truncated_batch()
+                return
             self.auto_last_error = f'Không đọc được JSON phản hồi: {exc}'
             self.web_status.setText(self.auto_last_error)
             self._schedule_poll()
@@ -1447,6 +1532,7 @@ class App(QMainWindow):
         self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()
+        self.web_state_timer.stop()
         self.auto_send_state = 'idle'
         self.auto_received = None
         self.auto_generation += 1
@@ -1473,6 +1559,7 @@ class App(QMainWindow):
         self._stop_reply_capture()
         self._cancel_native_pending()
         self.service_wait_timer.stop()
+        self.web_state_timer.stop()
         self.auto_generation += 1
         self.auto_session = False
         self.auto_send_state = 'idle'

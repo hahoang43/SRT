@@ -191,6 +191,65 @@ class AppGeminiTests(unittest.TestCase):
             finally:
                 self.close_window(window)
 
+    def test_token_limit_halves_batches_and_preserves_checkpoint_and_timestamps(self):
+        batches = []
+        def respond(h, p, data):
+            rows = json.loads(data['contents'][0]['parts'][0]['text'].split('DỮ LIỆU JSON:\n')[1])
+            ids = [row['id'] for row in rows]
+            batches.append(ids)
+            if len(ids) > 1:
+                LocalServer.json(h, {'candidates': [{'finishReason': 'MAX_TOKENS',
+                    'content': {'parts': [{'text': '{"items":[{"id":1,"vi":"INCOMPLETE'}]}}]})
+            else:
+                self.send_translation(h, [{'id': i, 'vi': VI[i]} for i in ids])
+        with LocalServer(respond) as server, tempfile.TemporaryDirectory() as temp:
+            window = self.window(server, temp)
+            try:
+                notices, failures = self.run_session(window)
+                self.assertEqual(failures, [], window.log_text.toPlainText())
+                self.assertEqual(len(notices), 1)
+                self.assertEqual(batches, [[1, 2], [1], [2], [3]])
+                restored = parse_srt(SOURCE)
+                self.assertEqual(restore_progress(window.path, SOURCE, restored), 3)
+                self.assertEqual([c.translation for c in restored], list(VI.values()))
+                self.assertEqual([c.time_range for c in parse_srt(srt_contents(restored))],
+                                 [c.time_range for c in parse_srt(SOURCE)])
+            finally:
+                self.close_window(window)
+
+    def test_persistent_token_limit_stops_at_one_cue_without_retry_loop(self):
+        def respond(h, p, d):
+            LocalServer.json(h, {'candidates': [{'finishReason': 'MAX_TOKENS'}]})
+        with LocalServer(respond) as server, tempfile.TemporaryDirectory() as temp:
+            window = self.window(server, temp)
+            window.batch_spin.setValue(3)
+            try:
+                notices, failures = self.run_session(window)
+                self.assertEqual(notices, [])
+                self.assertEqual(len(failures), 1)
+                self.assertIn('1 ID', failures[0])
+                self.assertEqual(len(server.requests), 2)
+                self.assertFalse(window.auto_session)
+                self.assertFalse(any(c.translation for c in window.model.cues))
+            finally:
+                self.close_window(window)
+
+    def test_quota_and_safety_errors_never_trigger_smaller_batch_retries(self):
+        for status, response in ((429, {'error': {'message': 'quota'}}),
+                                 (200, {'candidates': [{'finishReason': 'SAFETY'}]})):
+            with self.subTest(status=status), LocalServer(
+                    lambda h, p, d: LocalServer.json(h, response, status)) as server, tempfile.TemporaryDirectory() as temp:
+                window = self.window(server, temp)
+                try:
+                    notices, failures = self.run_session(window)
+                    self.assertEqual(notices, [])
+                    self.assertEqual(len(failures), 1)
+                    self.assertEqual(len(server.requests), 1)
+                    self.assertFalse(window.auto_session)
+                    self.assertFalse(any(c.translation for c in window.model.cues))
+                finally:
+                    self.close_window(window)
+
 
 if __name__=='__main__':
     unittest.main()

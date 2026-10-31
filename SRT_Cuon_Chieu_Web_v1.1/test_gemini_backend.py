@@ -166,7 +166,6 @@ class GeminiBackendTests(unittest.TestCase):
         responses = [
             {'promptFeedback': {'blockReason': 'SAFETY'}},
             {'candidates': []},
-            {'candidates': [{'finishReason': 'MAX_TOKENS', 'content': {'parts': [{'text': 'partial'}]}}]},
             {'candidates': [{'finishReason': 'SAFETY'}]},
             {'candidates': [{'finishReason': 'STOP', 'content': {'parts': [{'thought': True, 'text': 'secret'}]}}]},
             {'candidates': [None]},
@@ -184,6 +183,24 @@ class GeminiBackendTests(unittest.TestCase):
             values, errors = self.result(client, lambda: self.translate(client))
             self.assertEqual(values, [])
             self.assertNotIn(FAKE_KEY, errors[0])
+
+    def test_token_limit_emits_truncated_without_importing_partial_output(self):
+        response = {'candidates': [{'finishReason': 'MAX_TOKENS',
+                    'content': {'parts': [{'text': '{"items":[{"id":1,"vi":"partial'}]}}]}
+        with LocalServer(lambda h, p, d: LocalServer.json(h, response)) as server:
+            client = self.client()
+            truncated, translated = [], []
+            loop = QEventLoop()
+            client.truncated.connect(lambda: (truncated.append(True), loop.quit()))
+            client.translated.connect(translated.append)
+            QTimer.singleShot(3000, loop.quit)
+            self.translate(client)
+            loop.exec()
+            self.assertEqual(truncated, [True])
+            self.assertEqual(translated, [])
+            self.assertFalse(client.busy)
+            self.assertEqual(client._api_key, '')
+            self.assertEqual(len(server.requests), 1)
 
     def test_timeout_does_not_retry(self):
         def stalled(h, p, d):

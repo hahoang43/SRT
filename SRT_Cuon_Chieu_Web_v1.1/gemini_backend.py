@@ -49,6 +49,7 @@ def translation_payload(cues, prompt):
 class GeminiClient(QObject):
     models_ready = Signal(list)
     translated = Signal(str)
+    truncated = Signal()
     failed = Signal(str)
 
     def __init__(self, parent=None):
@@ -195,6 +196,12 @@ class GeminiClient(QObject):
             if not isinstance(candidates, list) or not candidates:
                 raise ValueError('Gemini không trả bản dịch. Kiểm tra nội dung hoặc đổi mô hình.')
             candidate = candidates[0]
+            if candidate.get('finishReason') == 'MAX_TOKENS':
+                # Discard unfinished output; the controller may retry smaller
+                # batches. HTTP/quota/safety failures keep their separate path.
+                self.cancel()
+                self.truncated.emit()
+                return
             if candidate.get('finishReason') != 'STOP':
                 raise ValueError('Gemini chưa hoàn tất bản dịch hoặc nội dung bị chặn. Giảm số dòng/lô; bản dịch dở chưa được nhập.')
             parts = candidate.get('content', {}).get('parts', [])

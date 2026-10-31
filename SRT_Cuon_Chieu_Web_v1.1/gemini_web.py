@@ -1,5 +1,6 @@
 """Gemini Web DOM adapter. No API key, login automation or ChatGPT binary."""
 import json
+from web_state import guard_web_state
 
 WEB_URL = 'https://gemini.google.com/app'
 
@@ -34,7 +35,7 @@ _HELPERS = r"""
 
 
 def _script(body):
-    return '(() => { ' + _HELPERS + '\n' + body + '\n})()'
+    return guard_web_state('(() => { ' + _HELPERS + '\n' + body + '\n})()')
 
 
 PROBE_JS = _script(r"""
