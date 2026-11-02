@@ -162,6 +162,7 @@ class App(QMainWindow):
         self.auto_recovering = False
         self.auto_last_error = ''
         self.auto_diagnostic = None
+        self.auto_prepare_reason = ''
         self.auto_send_state = 'idle'
         self.auto_received = None
         self.next_batch_timer = QTimer(self)
@@ -1082,6 +1083,7 @@ class App(QMainWindow):
         self.auto_last_error = ''
         self.auto_editor_deadline = time.monotonic() + self.timeout_spin.value()
         self.auto_editor_wait_logged = False
+        self.auto_prepare_reason = ''
         if self._uses_gemini():
             self.gemini_status.setText(f'Gemini đang dịch lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
             self.log(f'Đang gửi Gemini lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}.')
@@ -1092,6 +1094,7 @@ class App(QMainWindow):
                 self._auto_failed(str(error))
             return
         self.web_status.setText(f'Đang gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
+        self.auto_send_state = 'preparing'
         self._run_batch_script(self._web_probe_js(), lambda result: self._on_batch_probe(result, prompt))
 
     def _run_batch_script(self, script, callback):
@@ -1252,7 +1255,8 @@ class App(QMainWindow):
         else:
             prepared = (gemini_web.make_send_message_js(prompt, self.auto_generation) if self._uses_gemini_web()
                         else make_send_message_js(prompt))
-            self._run_batch_script(with_reply_capture(prepared, self.auto_batch, self.auto_generation), self._on_batch_prepared)
+            self._run_batch_script(with_reply_capture(prepared, self.auto_batch, self.auto_generation),
+                                   lambda value: self._on_batch_prepared(value, prompt))
 
     def _on_native_queued(self, result):
         if not isinstance(result, dict) or result.get('ok') is not True:
@@ -1299,9 +1303,32 @@ class App(QMainWindow):
         if WEB_BRIDGE.native and not self._uses_gemini_web() and self.auto_send_state == 'native_pending' and self.web_view is not None:
             self.web_view.page().runJavaScript('window.__srtNativeSendId = null;')
 
-    def _on_batch_prepared(self, result):
+    def _on_batch_prepared(self, result, prompt):
+        if not self.auto_session:
+            return
         if not isinstance(result, dict) or not result.get('ok'):
-            self._auto_failed('Không điền được nội dung lô vào ô chat.')
+            reason = (result.get('why') or result.get('scriptError') or 'Không đọc được trạng thái ô nhập.'
+                      if isinstance(result, dict) else 'Không đọc được trạng thái ô nhập.')
+            if isinstance(result, dict) and result.get('retryable') is True:
+                if time.monotonic() >= self.auto_editor_deadline:
+                    if self._try_recovery('điền ô chat', lambda: self._retry_editor_probe(prompt),
+                                          reason + ' Chưa bấm gửi lô.'):
+                        return
+                else:
+                    self.web_status.setText('Đang chờ điền ô chat: ' + reason)
+                    if reason != self.auto_prepare_reason:
+                        self.log('◌ Chờ điền ô chat, chưa gửi lô: ' + reason)
+                        self.auto_prepare_reason = reason
+                    generation = self.auto_generation
+                    def prepare_again():
+                        if (self.auto_session and generation == self.auto_generation and
+                                self.auto_send_state == 'preparing'):
+                            self._run_batch_script(self._web_probe_js(),
+                                                   lambda value: self._on_batch_probe(value, prompt))
+                    QTimer.singleShot(750, prepare_again)
+                    return
+            self._auto_failed('Không điền được nội dung lô vào ô chat: ' + reason +
+                              ' Bản dịch đã lưu được giữ nguyên.')
             return
         self.auto_send_state = 'waiting'
         self.auto_send_deadline = time.monotonic() + min(30, self.timeout_spin.value())

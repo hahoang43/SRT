@@ -64,31 +64,48 @@ def make_send_message_js(message, request_id):
       if (!site) return {ok:false, why:'Trang hiện tại không phải Gemini.'};
       const text = MESSAGE, id = REQUEST_ID;
       const editor = findEditor();
-      if (!editor) return {ok:false, why:'Chưa thấy ô nhập Gemini. Kiểm tra đăng nhập Google trên Web.'};
+      if (!editor) return {ok:false, retryable:true, why:'Ô nhập Gemini tạm chưa sẵn sàng.'};
       if (window.__srtGeminiSend?.id === id && window.__srtGeminiSend.sent)
         return {ok:false, why:'Lô này đã được gửi. Không tự gửi trùng.'};
+      if (stopVisible())
+        return {ok:false, retryable:true, why:'Gemini vẫn đang tạo phản hồi trước.'};
       const previous = normalize(draft(editor));
-      if (previous && previous !== normalize(text))
+      const state = window.__srtGeminiSend;
+      // Gemini can leave the submitted prompt in Quill after replying. Replace
+      // only an exact prompt owned by an earlier, already-clicked batch.
+      const staleSentDraft = state && state.id !== id && state.sent === true &&
+        typeof state.text === 'string' && !!state.text && previous === normalize(state.text);
+      if (previous && previous !== normalize(text) && !staleSentDraft)
         return {ok:false, why:'Ô Gemini đang có bản nháp khác. Cất hoặc xóa bản nháp trước khi dịch.'};
+      editor.scrollIntoView({behavior:'instant', block:'center'});
       editor.focus();
-      if (editor.tagName.toLowerCase() === 'textarea') {
+      if (previous === normalize(text)) {
+        // A retry may find the exact batch already prepared. Leave it intact.
+      } else if (editor.tagName.toLowerCase() === 'textarea') {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, text);
         editor.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
       } else {
         const range = document.createRange(), selection = window.getSelection();
         range.selectNodeContents(editor);
         selection.removeAllRanges(); selection.addRange(range);
-        if (!document.execCommand('insertText', false, text)) {
-          editor.textContent = text;
+        document.execCommand('insertText', false, text);
+        // Chromium may report success without inserting into a rerendering
+        // Quill editor. Fall back only for an empty or known sent draft.
+        if (!normalize(draft(editor)) || (staleSentDraft && normalize(draft(editor)) === previous)) {
+          editor.innerText = text;
           editor.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
         }
       }
+      if (!editor.isConnected || findEditor() !== editor)
+        return {ok:false, retryable:true, why:'Gemini vừa thay ô nhập; chờ ô mới sẵn sàng.'};
       const ok = normalize(draft(editor)) === normalize(text);
       if (ok) {
         window.__srtOutboundPrompt = text;
-        window.__srtGeminiSend = {id, sent:false};
+        window.__srtGeminiSend = {id, sent:false, text};
       }
-      return {ok, prepared:true};
+      return ok ? {ok:true, prepared:true} : {
+        ok:false, retryable:!normalize(draft(editor)),
+        why:'Ô nhập Gemini chưa giữ đúng nội dung lô; chưa bấm gửi.'};
     """.replace('REQUEST_ID', str(int(request_id))).replace('MESSAGE', json.dumps(message, ensure_ascii=False)))
 
 

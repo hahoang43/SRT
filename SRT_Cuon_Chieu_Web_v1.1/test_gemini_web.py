@@ -174,14 +174,70 @@ class GeminiWebTests(unittest.TestCase):
     def test_changed_draft_and_visible_stop_prevent_send(self):
         window = self.window()
         self.html(window, '''<rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
-            <button class="send-button" onclick="window.clicked=true">Send</button>
-            <button class="stop-button">Stop</button>''')
+            <button class="send-button" onclick="window.clicked=true">Send</button>''')
         self.assertTrue(self.js(window, gemini_web.make_send_message_js('batch', 1))['ok'])
+        self.js(window, '''(() => {const stop=document.createElement('button');
+            stop.className='stop-button'; stop.textContent='Stop'; document.body.append(stop); return true;})()''')
         self.assertTrue(self.js(window, gemini_web.SEND_MESSAGE_JS)['retryable'])
+        self.assertTrue(self.js(window, gemini_web.make_send_message_js('batch', 1))['retryable'])
         self.js(window, '(() => {document.querySelector(".stop-button").remove(); document.querySelector(".ql-editor").innerText="manual"; return true;})()')
         self.assertFalse(self.js(window, gemini_web.SEND_MESSAGE_JS)['ok'])
         self.assertFalse(self.js(window, gemini_web.make_send_message_js('other batch', 2))['ok'])
         self.assertFalse(self.js(window, '!!window.clicked'))
+
+    def test_prepare_falls_back_when_insert_reports_success_without_text(self):
+        window = self.window()
+        self.html(window, '''<rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
+            <script>document.execCommand=()=>true;
+            document.querySelector('.ql-editor').addEventListener('input',()=>window.inputs=(window.inputs||0)+1);</script>''')
+        self.assertTrue(self.js(window, gemini_web.make_send_message_js('lô mới\n你好', 1))['ok'])
+        self.assertEqual(self.js(window, 'document.querySelector(".ql-editor").innerText'), 'lô mới\n你好')
+        self.assertEqual(self.js(window, 'window.inputs'), 1)
+        self.assertTrue(self.js(window, gemini_web.make_send_message_js('lô mới\n你好', 1))['ok'])
+        self.assertEqual(self.js(window, 'window.inputs'), 1)
+
+    def test_unsent_or_manually_changed_draft_is_never_replaced(self):
+        window = self.window()
+        self.html(window, '''<rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
+            <button class="send-button" onclick="window.clicks=(window.clicks||0)+1">Send</button>''')
+        self.assertTrue(self.js(window, gemini_web.make_send_message_js('lô cũ', 1))['ok'])
+        result = self.js(window, gemini_web.make_send_message_js('lô mới', 2))
+        self.assertFalse(result['ok'])
+        self.assertNotIn('retryable', result)
+        self.assertEqual(self.js(window, 'document.querySelector(".ql-editor").innerText'), 'lô cũ')
+        self.assertTrue(self.js(window, gemini_web.SEND_MESSAGE_JS)['ok'])
+        self.js(window, '''(() => {document.querySelector('.ql-editor').textContent='bản nháp riêng'; return true;})()''')
+        result = self.js(window, gemini_web.make_send_message_js('lô mới', 2))
+        self.assertFalse(result['ok'])
+        self.assertEqual(self.js(window, 'document.querySelector(".ql-editor").innerText'), 'bản nháp riêng')
+        self.assertEqual(self.js(window, 'window.clicks'), 1)
+
+    def test_prepare_timeout_reports_reason_and_stop_cancels_pending_retry(self):
+        for expired in (False, True):
+            with self.subTest(expired=expired):
+                window = self.window()
+                window.auto_session = True
+                window.auto_send_state = 'preparing'
+                window.auto_editor_deadline = time.monotonic() + (-1 if expired else 30)
+                window.auto_recover_checkbox.setChecked(False)
+                timers, failures, scripts = [], [], []
+                reason = 'Ô nhập Gemini tạm chưa sẵn sàng.'
+                with (patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)),
+                      patch('app.QMessageBox.warning', side_effect=lambda p,t,m: failures.append(m)),
+                      patch.object(window, '_run_batch_script', side_effect=lambda *args: scripts.append(args))):
+                    window._on_batch_prepared({'ok': False, 'retryable': True, 'why': reason}, 'prompt')
+                    if expired:
+                        self.assertFalse(window.auto_session)
+                        self.assertEqual(len(failures), 1)
+                        self.assertIn(reason, failures[0])
+                        self.assertEqual(timers, [])
+                    else:
+                        self.assertTrue(window.auto_session)
+                        self.assertEqual(len(timers), 1)
+                        window.stop_translation()
+                        timers[0]()
+                        self.assertEqual(failures, [])
+                    self.assertEqual(scripts, [])
 
     def test_reader_ignores_user_json_and_reads_only_model_response(self):
         window = self.window()
@@ -218,7 +274,13 @@ class GeminiWebTests(unittest.TestCase):
     def test_array_code_block_reaches_table_and_checkpoint(self):
         self.check_two_batches(True)
 
-    def check_two_batches(self, array_response):
+    def test_retained_sent_prompt_is_replaced_and_next_batch_is_saved(self):
+        self.check_two_batches(True, retained_draft=True)
+
+    def test_editor_replacement_retries_without_duplicate_send(self):
+        self.check_two_batches(True, rerender_editor=True)
+
+    def check_two_batches(self, array_response, retained_draft=False, rerender_editor=False):
         window = self.window()
         html = '''<main><div id="messages"></div></main>
             <rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
@@ -237,6 +299,20 @@ class GeminiWebTests(unittest.TestCase):
               reply.firstChild.textContent=JSON.stringify({items:rows.map(row=>({id:row.id,vi:row.id===1?'Xin chào':'Tạm biệt'}))});
             };
             </script>'''
+        if retained_draft:
+            html = html.replace("editor.textContent='';", '')
+        if rerender_editor:
+            html = html.replace('window.batches=[];', '''window.batches=[];
+                const insert=document.execCommand.bind(document);
+                document.execCommand=(...args)=>{
+                  if (window.batches.length===1 && !window.replaced) {
+                    window.replaced=true;
+                    const old=document.querySelector('.ql-editor');
+                    const fresh=old.cloneNode(false); old.replaceWith(fresh);
+                    return false;
+                  }
+                  return insert(...args);
+                };''')
         if array_response:
             html = html.replace(
                 "reply.firstChild.textContent=JSON.stringify({items:rows.map(row=>({id:row.id,vi:row.id===1?'Xin chào':'Tạm biệt'}))});",

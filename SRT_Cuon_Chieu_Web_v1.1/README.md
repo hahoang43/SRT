@@ -22,6 +22,8 @@ File .exe đã build từ bản cũ vẫn chứa mã và thành phần cũ. Mu�
 
 Gemini Web và Gemini API là **hai lựa chọn riêng**. Gemini Web dùng tài khoản Google, không dùng API key hay mô hình trong danh sách API; lỗi HTTP 404 của lựa chọn API không được xử lý bằng việc giảm số dòng/lô hoặc mở Web. App không tự chuyển giữa hai cách dịch. Hạn mức, mô hình, yêu cầu đăng nhập và xác minh của Gemini Web do Google quyết định.
 
+Nếu Gemini để lại prompt của lô đã gửi trong ô nhập, app nhận diện đúng nội dung đó và thay bằng lô kế tiếp sau khi nhận bản dịch. Bản nháp khác do bạn nhập được giữ nguyên và báo rõ để bạn xử lý. Khi Gemini đang tạo phản hồi hoặc thay ô nhập, app chờ và thử chuẩn bị lại trong thời gian giới hạn; bước chuẩn bị không bấm gửi. Lỗi điền ô chat ghi kèm lý do cụ thể trong nhật ký, tiến độ đã dịch vẫn được lưu.
+
 Cookie Gemini lưu trong `gemini_profile`, tách khỏi `chatgpt_profile`; chuyển bộ dịch giữ nguyên hồ sơ và tiến độ. Không dùng module `ai_chatgpt.pyd` cho Gemini Web. Gemini Web cần truy cập `gemini.google.com` và các trang đăng nhập/tài nguyên Google liên quan nếu mạng có giới hạn. DOM của Gemini có thể thay đổi; kiểm thử HTML cục bộ không thay thế kiểm tra đăng nhập/dịch thực tế trên Windows.
 
 ## Dùng Gemini API với Google AI Studio
