@@ -320,6 +320,71 @@ class GeminiWebTests(unittest.TestCase):
                         self.assertEqual(failures, [])
                     self.assertEqual(scripts, [])
 
+    def test_prepare_script_errors_recover_three_times_or_stop_if_disabled(self):
+        for recover in (False, True):
+            with self.subTest(recover=recover):
+                window = self.window()
+                window.auto_session = True
+                window.auto_send_state = 'preparing'
+                window.auto_hard_deadline = time.monotonic() + 300
+                window.auto_recover_checkbox.setChecked(recover)
+                timers, failures = [], []
+                error = {'scriptError': 'QtWebEngine không trả kết quả trong 30 giây.', 'scriptTimeout': True}
+                with (patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)),
+                      patch('app.QMessageBox.warning', side_effect=lambda p,t,m: failures.append(m)),
+                      patch.object(window, '_retry_editor_probe') as probe,
+                      patch.object(window, '_schedule_send') as send):
+                    if recover:
+                        for _ in range(3):
+                            window._on_batch_prepared(error, 'same batch')
+                            self.assertTrue(window.auto_session)
+                            self.assertEqual(len(timers), 1)
+                            timers.pop()()
+                        self.assertEqual(probe.call_count, 3)
+                        probe.assert_called_with('same batch')
+                    window._on_batch_prepared(error, 'same batch')
+                    self.assertFalse(window.auto_session)
+                    self.assertEqual(len(failures), 1)
+                    self.assertIn(error['scriptError'], failures[0])
+                    # A late success after the exhausted/disabled recovery may
+                    # not restart sending a stopped batch.
+                    window._on_batch_prepared({'ok': True}, 'same batch')
+                    send.assert_not_called()
+
+    def test_stop_cancels_preparation_script_error_recovery(self):
+        window = self.window()
+        window.auto_session = True
+        window.auto_send_state = 'preparing'
+        window.auto_hard_deadline = time.monotonic() + 300
+        window.auto_recover_checkbox.setChecked(True)
+        timers = []
+        with (patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append(fn)),
+              patch.object(window, '_retry_editor_probe') as probe,
+              patch.object(window, '_schedule_send') as send):
+            window._on_batch_prepared({'scriptError': 'Renderer slow'}, 'same batch')
+            self.assertTrue(window.auto_recovering)
+            window.stop_translation()
+            timers.pop()()
+            probe.assert_not_called()
+            send.assert_not_called()
+
+    def test_preparation_deadline_keeps_late_success_and_completes_once(self):
+        window = self.window()
+        window.auto_session = True
+        window.auto_send_state = 'preparing'
+        callbacks, timers = [], []
+        with (patch('app.QTimer.singleShot', side_effect=lambda delay, fn: timers.append((delay, fn))),
+              patch.object(window, '_run_web_script', side_effect=lambda script, cb: callbacks.append(cb)),
+              patch.object(window, '_schedule_send') as send):
+            window._run_batch_script('prepare', lambda value: window._on_batch_prepared(value, 'same batch'),
+                                     timeout_ms=30000)
+            self.assertEqual(timers[0][0], 30000)
+            callbacks[0]({'ok': True, 'prepared': True})
+            timers[0][1]()
+            callbacks[0]({'ok': True, 'prepared': True})
+            self.assertEqual(window.auto_send_state, 'waiting')
+            send.assert_called_once_with(350)
+
     def test_reader_ignores_user_json_and_reads_only_model_response(self):
         window = self.window()
         payload = '{"items":[{"id":1,"vi":"Xin chào"}]}'
@@ -361,8 +426,35 @@ class GeminiWebTests(unittest.TestCase):
     def test_editor_replacement_retries_without_duplicate_send(self):
         self.check_two_batches(True, rerender_editor=True)
 
-    def check_two_batches(self, array_response, retained_draft=False, rerender_editor=False):
+    def test_missing_prepare_callback_recovers_and_keeps_checkpoint_without_duplicate_send(self):
+        self.check_two_batches(True, lost_prepare_callback=True)
+
+    def check_two_batches(self, array_response, retained_draft=False, rerender_editor=False,
+                          lost_prepare_callback=False):
         window = self.window()
+        single_shot = QTimer.singleShot
+        watchdogs, dropped, recoveries = [], [], []
+        def schedule(delay, action):
+            if delay == 30000:
+                watchdogs.append(action)
+            if lost_prepare_callback and delay == 5000:
+                recoveries.append(action)
+                return single_shot(10, action)
+            return single_shot(delay, action)
+        run = window._run_web_script
+        def run_with_missing_preparation_callback(script, callback):
+            def received(value):
+                if (lost_prepare_callback and not dropped and isinstance(value, dict) and
+                        value.get('ok') and value.get('prepared')):
+                    dropped.append(value)
+                    # The renderer DID enter the prompt. Deliver the watchdog
+                    # first, then the late original callback after recovery.
+                    single_shot(0, watchdogs[-1])
+                    single_shot(100, lambda: callback(value))
+                else:
+                    callback(value)
+            run(script, received)
+        window._run_web_script = run_with_missing_preparation_callback
         html = '''<main><div id="messages"></div></main>
             <rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
             <button class="send-button">Send</button>
@@ -413,6 +505,7 @@ class GeminiWebTests(unittest.TestCase):
             window.show_notice = notices.append
             with (patch('app.load_web_bridge') as native, patch('app.WEB_BRIDGE') as bridge,
                   patch.object(window.gemini, 'translate') as api,
+                  patch('app.QTimer.singleShot', side_effect=schedule),
                   patch('app.QMessageBox.warning', side_effect=lambda p,t,m: failures.append(m))):
                 bridge.native = True  # Even a loaded ChatGPT binary must never serve Gemini.
                 window.start_translation()
@@ -420,6 +513,9 @@ class GeminiWebTests(unittest.TestCase):
                 native.assert_not_called()
                 api.assert_not_called()
             self.assertEqual(failures, [])
+            if lost_prepare_callback:
+                self.assertEqual(len(dropped), 1)
+                self.assertEqual(len(recoveries), 1)
             self.assertEqual(len(notices), 1)
             self.assertEqual(self.js(window, 'window.batches'), [[1], [2]])
             self.assertTrue(self.js(window, gemini_web.READ_LATEST_RESPONSE_JS)['diagnostics']['submissionConfirmed'])

@@ -1101,7 +1101,7 @@ class App(QMainWindow):
         self.auto_send_state = 'preparing'
         self._run_batch_script(self._web_probe_js(), lambda result: self._on_batch_probe(result, prompt))
 
-    def _run_batch_script(self, script, callback):
+    def _run_batch_script(self, script, callback, *, timeout_ms=10000):
         generation = self.auto_generation
         completed = False
         def current(result):
@@ -1118,8 +1118,9 @@ class App(QMainWindow):
                     callback(result)
         def stalled():
             if not completed and self.auto_session and self.auto_generation == generation:
-                current({'scriptError':'QtWebEngine không trả kết quả trong 10 giây.'})
-        QTimer.singleShot(10000, stalled)
+                current({'scriptError':f'QtWebEngine không trả kết quả trong {timeout_ms // 1000} giây.',
+                         'scriptTimeout':True})
+        QTimer.singleShot(timeout_ms, stalled)
         self._run_web_script(script, current)
 
     def _wait_for_service(self, result):
@@ -1260,7 +1261,8 @@ class App(QMainWindow):
             prepared = (gemini_web.make_send_message_js(prompt, self.auto_generation) if self._uses_gemini_web()
                         else make_send_message_js(prompt))
             self._run_batch_script(with_reply_capture(prepared, self.auto_batch, self.auto_generation),
-                                   lambda value: self._on_batch_prepared(value, prompt))
+                                   lambda value: self._on_batch_prepared(value, prompt),
+                                   timeout_ms=min(30000, self.timeout_spin.value() * 1000))
 
     def _on_native_queued(self, result):
         if not isinstance(result, dict) or result.get('ok') is not True:
@@ -1308,11 +1310,18 @@ class App(QMainWindow):
             self.web_view.page().runJavaScript('window.__srtNativeSendId = null;')
 
     def _on_batch_prepared(self, result, prompt):
-        if not self.auto_session:
+        if not self.auto_session or self.auto_send_state != 'preparing':
             return
         if not isinstance(result, dict) or not result.get('ok'):
             reason = (result.get('why') or result.get('scriptError') or 'Không đọc được trạng thái ô nhập.'
                       if isinstance(result, dict) else 'Không đọc được trạng thái ô nhập.')
+            # Built-in preparation only writes the draft. A missing callback
+            # may leave the exact prompt already in the editor; reprobe and
+            # prepare the same generation, without clicking Send again.
+            if isinstance(result, dict) and result.get('scriptError'):
+                if self._try_recovery('điền ô chat', lambda: self._retry_editor_probe(prompt),
+                                      reason + ' Kiểm tra lại cùng lô; chưa bấm gửi.'):
+                    return
             if isinstance(result, dict) and result.get('retryable') is True:
                 if time.monotonic() >= self.auto_editor_deadline:
                     if self._try_recovery('điền ô chat', lambda: self._retry_editor_probe(prompt),

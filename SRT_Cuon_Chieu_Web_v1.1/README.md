@@ -24,6 +24,8 @@ Gemini Web và Gemini API là **hai lựa chọn riêng**. Gemini Web dùng tài
 
 Nếu Gemini để lại prompt của lô đã gửi trong ô nhập, app nhận diện đúng nội dung đó và thay bằng lô kế tiếp sau khi nhận bản dịch. Bản nháp khác do bạn nhập được giữ nguyên và báo rõ để bạn xử lý. Khi Gemini đang tạo phản hồi hoặc thay ô nhập, app chờ và thử chuẩn bị lại trong thời gian giới hạn; bước chuẩn bị không bấm gửi. Lỗi điền ô chat ghi kèm lý do cụ thể trong nhật ký, tiến độ đã dịch vẫn được lưu.
 
+Khi điền prompt, app chờ QtWebEngine trả kết quả tối đa 30 giây (hoặc thời gian chờ đã chọn nếu ngắn hơn). Nếu callback bị chậm/mất và “Tự phục hồi khi Web chậm” đang bật, app thử kiểm tra lại cùng lô sau 5 giây, tối đa 3 lần. Prompt đã điền đúng được giữ nguyên để tiếp tục; callback cũ trả về muộn không tạo thêm lần gửi. Tắt phục hồi hoặc hết số lần thử thì app dừng và giữ checkpoint.
+
 Nhật ký Gemini phân biệt thao tác bấm gửi với việc prompt xuất hiện trong hội thoại. Chẩn đoán có số lượt hỏi, trạng thái ô nhập và xác nhận prompt của lô, không ghi thêm nội dung prompt. Nếu hết thời gian chờ, thông báo cho biết prompt còn trong ô nhập, ô đã trống nhưng chưa xác nhận gửi, hay prompt đã vào hội thoại nhưng chưa có JSON hợp lệ. App nhận diện cả nút Dừng bằng nhãn tiếng Việt và biểu tượng để chờ Gemini hoàn tất trước khi chuẩn bị lô mới.
 
 Cookie Gemini lưu trong `gemini_profile`, tách khỏi `chatgpt_profile`; chuyển bộ dịch giữ nguyên hồ sơ và tiến độ. Không dùng module `ai_chatgpt.pyd` cho Gemini Web. Gemini Web cần truy cập `gemini.google.com` và các trang đăng nhập/tài nguyên Google liên quan nếu mạng có giới hạn. DOM của Gemini có thể thay đổi; kiểm thử HTML cục bộ không thay thế kiểm tra đăng nhập/dịch thực tế trên Windows.
