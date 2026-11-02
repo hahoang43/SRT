@@ -25,9 +25,14 @@ _HELPERS = r"""
   const responseText = el => {
     if (!el) return '';
     const content = el.querySelector('.markdown-main-panel, .model-response-text, message-content') || el;
-    const blocks = [...content.querySelectorAll('pre code')].map(node => (node.textContent || '').trim());
+    const blocks = [...content.querySelectorAll('pre code, pre, code-block code, code-block .code-container')]
+      .map(node => (node.textContent || '').trim());
     const jsonBlock = blocks.find(text => {
-      try { return Array.isArray(JSON.parse(text).items); } catch (_) { return false; }
+      try {
+        const value = JSON.parse(text);
+        return Array.isArray(value.items) || (Array.isArray(value) && value.every(
+          row => row && Number.isInteger(row.id) && typeof row.vi === 'string'));
+      } catch (_) { return false; }
     });
     return jsonBlock || (content.innerText || content.textContent || '').trim();
   };

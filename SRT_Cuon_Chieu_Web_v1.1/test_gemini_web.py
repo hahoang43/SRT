@@ -213,6 +213,12 @@ class GeminiWebTests(unittest.TestCase):
                 self.assertEqual(bool(result.get('captured')), captured)
 
     def test_two_batches_reach_table_and_checkpoint_without_native_or_api(self):
+        self.check_two_batches(False)
+
+    def test_array_code_block_reaches_table_and_checkpoint(self):
+        self.check_two_batches(True)
+
+    def check_two_batches(self, array_response):
         window = self.window()
         html = '''<main><div id="messages"></div></main>
             <rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
@@ -231,6 +237,12 @@ class GeminiWebTests(unittest.TestCase):
               reply.firstChild.textContent=JSON.stringify({items:rows.map(row=>({id:row.id,vi:row.id===1?'Xin chào':'Tạm biệt'}))});
             };
             </script>'''
+        if array_response:
+            html = html.replace(
+                "reply.firstChild.textContent=JSON.stringify({items:rows.map(row=>({id:row.id,vi:row.id===1?'Xin chào':'Tạm biệt'}))});",
+                "reply.firstChild.innerHTML='<code-block>JSON<button>Copy</button><pre></pre></code-block>';"
+                "reply.querySelector('pre').textContent=JSON.stringify(rows.map(row=>({id:row.id,vi:row.id===1?'Xin chào':'Tạm biệt'})));"
+            )
         self.html(window, html)
         source = '1\n00:00:01,000 --> 00:00:02,000\n你好\n\n2\n00:00:03,000 --> 00:00:04,000\n再见\n'
         with tempfile.TemporaryDirectory() as temp:

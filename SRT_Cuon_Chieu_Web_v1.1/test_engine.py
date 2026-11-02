@@ -53,6 +53,8 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract_json(payload[:-2])
         with self.assertRaises(ValueError):
+            extract_json(payload[:-1])
+        with self.assertRaises(ValueError):
             extract_json(payload + '\n' + payload)
 
     def test_manual_json_and_prompt(self):
@@ -60,6 +62,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(obj, {'items': []})
         self.assertIn('DỮ LIỆU JSON:', make_batch_prompt(parse_srt(SRC), 'Dịch tự nhiên'))
         with self.assertRaises(ValueError): parse_srt('invalid srt')
+
+    def test_gemini_array_with_code_block_toolbar(self):
+        rows = [{'id': 1, 'vi': 'Xin chào'}, {'id': 2, 'vi': 'Đừng lo\nTôi giúp bạn'}]
+        raw = json.dumps(rows, ensure_ascii=False)
+        for text in (raw, '```json\n' + raw + '\n```', 'JSON\n' + raw + '\nSao chép mã'):
+            self.assertEqual(check_translations(parse_srt(SRC), extract_json(text)),
+                             {1: 'Xin chào', 2: 'Đừng lo\nTôi giúp bạn'})
+        for text in (raw[:-1], raw + '\n' + raw):
+            with self.assertRaises(ValueError):
+                extract_json(text)
 
     def test_truncation_requires_unfinished_translation_json(self):
         for text in ('{"items":[', '{"items":[{"id":1,"vi":"Chào',

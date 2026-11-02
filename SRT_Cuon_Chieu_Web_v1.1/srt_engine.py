@@ -140,7 +140,7 @@ def restore_progress(path: str | Path, content: str, cues: list[Cue]) -> int:
 
 
 def extract_json(value: str) -> dict:
-    """Accept raw JSON, or JSON enclosed by a markdown ```json code fence."""
+    """Accept a complete translation object or array, optionally wrapped in prose."""
     value = value.strip()
     fenced = re.match(r'^```(?:json)?\s*\n([\s\S]*?)\n```\s*$', value, flags=re.I)
     if fenced:
@@ -154,19 +154,27 @@ def extract_json(value: str) -> dict:
         decoder = json.JSONDecoder()
         offset = 0
         while offset < len(value):
-            start = value.find('{', offset)
-            if start < 0:
+            match = re.search(r'[\[{]', value[offset:])
+            if match is None:
                 break
+            start = offset + match.start()
             try:
                 candidate, length = decoder.raw_decode(value[start:])
                 if isinstance(candidate, dict) and isinstance(candidate.get('items'), list):
                     candidates.append(candidate)
+                elif isinstance(candidate, list) and candidate and all(
+                        isinstance(row, dict) and 'id' in row and 'vi' in row for row in candidate):
+                    candidates.append({'items': candidate})
                 offset = start + length
             except json.JSONDecodeError:
+                if re.match(r'\{\s*"items"\s*:', value[start:]):
+                    raise original
                 offset = start + 1
         if len(candidates) != 1:
             raise original
         result = candidates[0]
+    if isinstance(result, list):
+        result = {'items': result}
     if not isinstance(result, dict):
         raise ValueError('Kết quả cần là JSON object.')
     return result
