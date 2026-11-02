@@ -196,6 +196,87 @@ class GeminiWebTests(unittest.TestCase):
         self.assertTrue(self.js(window, gemini_web.make_send_message_js('lô mới\n你好', 1))['ok'])
         self.assertEqual(self.js(window, 'window.inputs'), 1)
 
+    def test_localized_and_icon_stop_controls_prevent_next_batch(self):
+        window = self.window()
+        for control in (
+            '<button class="send-button" aria-label="Dừng câu trả lời">Dừng</button>',
+            '<button class="send-button"><mat-icon fonticon="stop"></mat-icon></button>',
+            '<button class="send-button"><mat-icon>stop_circle</mat-icon></button>',
+        ):
+            with self.subTest(control=control):
+                self.html(window, '<rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>' + control)
+                result = self.js(window, gemini_web.READ_LATEST_RESPONSE_JS)
+                self.assertTrue(result['generating'])
+                self.assertTrue(result['stopVisible'])
+                result = self.js(window, gemini_web.make_send_message_js('next batch', 1))
+                self.assertFalse(result['ok'])
+                self.assertTrue(result['retryable'])
+                self.assertEqual(self.js(window, 'document.querySelector(".ql-editor").innerText'), '')
+
+    def test_click_is_not_confirmed_by_empty_composer_or_old_queries(self):
+        window = self.window()
+        self.html(window, '''<main><user-query>batch</user-query></main>
+            <rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
+            <button class="send-button" onclick="window.clicks=(window.clicks||0)+1; document.querySelector('.ql-editor').innerText=''">Send</button>''')
+        self.assertTrue(self.js(window, gemini_web.make_send_message_js('batch', 1))['ok'])
+        self.assertTrue(self.js(window, gemini_web.SEND_MESSAGE_JS)['ok'])
+        for _ in range(2):
+            result = self.js(window, gemini_web.READ_LATEST_RESPONSE_JS)
+            self.assertTrue(result['diagnostics']['sendClicked'])
+            self.assertFalse(result['diagnostics']['submissionConfirmed'])
+            self.assertEqual(result['diagnostics']['draftChars'], 0)
+            self.assertTrue(self.js(window, gemini_web.SEND_MESSAGE_JS)['alreadySent'])
+        self.assertEqual(self.js(window, 'window.clicks'), 1)
+        self.js(window, '''(() => {const query=document.createElement('user-query');
+            query.textContent='batch'; document.querySelector('main').append(query); return true;})()''')
+        result = self.js(window, gemini_web.READ_LATEST_RESPONSE_JS)
+        self.assertTrue(result['diagnostics']['submissionConfirmed'])
+
+    def test_complete_reply_is_saved_but_waits_for_stop_icon_to_disappear(self):
+        window = self.window()
+        payload = '{"items":[{"id":1,"vi":"Xin chào"}]}'
+        self.html(window, '<main><model-response>' + payload + '</model-response></main>'
+                  '<button class="send-button"><mat-icon>stop</mat-icon></button>')
+        window.model.load_cues(parse_srt('1\n00:00:01,000 --> 00:00:02,000\n你好\n'))
+        window.auto_batch = window.model.cues
+        window.auto_session = window.batch_waiting_for_json = True
+        window.auto_baseline_text = ''
+        window.auto_hard_deadline = time.monotonic() + 30
+        result = self.js(window, gemini_web.READ_LATEST_RESPONSE_JS)
+        with (patch.object(window, '_accept_batch') as accept,
+              patch.object(window, '_schedule_poll') as poll):
+            window._on_batch_response(result)
+            self.assertEqual(window.model.cues[0].translation, 'Xin chào')
+            accept.assert_not_called()
+            poll.assert_called_once()
+            self.js(window, '''(() => {document.querySelector('mat-icon').textContent='send'; return true;})()''')
+            window._on_batch_response(self.js(window, gemini_web.READ_LATEST_RESPONSE_JS))
+            accept.assert_called_once_with({1: 'Xin chào'})
+
+    def test_timeout_distinguishes_unconfirmed_click_from_submitted_batch(self):
+        window = self.window()
+        window.model.load_cues(parse_srt('1\n00:00:01,000 --> 00:00:02,000\n你好\n'))
+        window.auto_batch = window.model.cues
+        for confirmed, draft in ((False, True), (False, False), (True, False)):
+            with self.subTest(confirmed=confirmed, draft=draft):
+                window.auto_session = True
+                window.batch_waiting_for_json = True
+                window.auto_submission_confirmed = confirmed
+                window.auto_submission_diagnostic = {'sendClicked': True, 'draftMatchesBatch': draft}
+                window.auto_deadline = window.auto_hard_deadline = time.monotonic() - 1
+                window.auto_last_error = ''
+                with (patch.object(window, '_auto_failed') as failed,
+                      patch.object(window, '_run_batch_script') as script):
+                    window._poll_batch_response()
+                    script.assert_not_called()
+                    message = failed.call_args.args[0]
+                    if confirmed:
+                        self.assertIn('Prompt đã xuất hiện trong hội thoại', message)
+                    elif draft:
+                        self.assertIn('Prompt vẫn còn trong ô nhập', message)
+                    else:
+                        self.assertIn('Ô nhập đã trống hoặc thay đổi', message)
+
     def test_unsent_or_manually_changed_draft_is_never_replaced(self):
         window = self.window()
         self.html(window, '''<rich-textarea><div class="ql-editor" contenteditable="true"></div></rich-textarea>
@@ -341,6 +422,7 @@ class GeminiWebTests(unittest.TestCase):
             self.assertEqual(failures, [])
             self.assertEqual(len(notices), 1)
             self.assertEqual(self.js(window, 'window.batches'), [[1], [2]])
+            self.assertTrue(self.js(window, gemini_web.READ_LATEST_RESPONSE_JS)['diagnostics']['submissionConfirmed'])
             self.assertEqual([cue.translation for cue in window.model.cues], ['Xin chào', 'Tạm biệt'])
             restored = parse_srt(source)
             self.assertEqual(restore_progress(window.path, source, restored), 2)

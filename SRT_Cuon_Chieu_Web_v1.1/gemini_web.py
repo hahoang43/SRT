@@ -16,10 +16,28 @@ _HELPERS = r"""
   )].find(el => shown(el) && !el.disabled && !el.readOnly && el.getAttribute('aria-disabled') !== 'true');
   const draft = el => el.tagName.toLowerCase() === 'textarea' ? el.value : el.innerText;
   const stopVisible = () => [...document.querySelectorAll(
-    'button.stop-button, button[aria-label="Stop response"], button[aria-label="Stop generating"], ' +
-    'button[aria-label="Dừng phản hồi"], button[aria-label="Dừng tạo"], ' +
-    'button[aria-label="Stop"], button[aria-label="Dừng"]'
-  )].some(shown);
+    'button.stop-button, button[data-test-id="stop-button"], button[data-testid="stop-button"], ' +
+    'button[aria-label^="Stop" i], button[aria-label^="Dừng" i], button.send-button'
+  )].some(button => shown(button) && (
+    button.matches('.stop-button, [data-test-id="stop-button"], [data-testid="stop-button"]') ||
+    /^(Stop|Dừng)(\s|$)/i.test(button.getAttribute('aria-label') || '') ||
+    [...button.querySelectorAll('mat-icon, .mat-icon')].some(icon =>
+      /^(stop|stop_circle)$/.test((icon.getAttribute('fonticon') || icon.textContent || '').trim()))));
+  const queries = () => [...document.querySelectorAll('user-query')];
+  const compact = text => (text || '').replace(/\s/g, '');
+  const matchingQueries = text => {
+    const expected = compact(text);
+    return expected ? queries().filter(query => compact(query.textContent).includes(expected)).length : 0;
+  };
+  const submissionState = () => {
+    const state = window.__srtGeminiSend, editor = findEditor();
+    if (state?.sent && matchingQueries(state.text) > state.matchingQueriesBefore)
+      state.confirmed = true;
+    return {userQueries:queries().length, editorPresent:!!editor,
+      draftChars:editor ? draft(editor).length : 0,
+      draftMatchesBatch:!!editor && !!state && normalize(draft(editor)) === normalize(state.text),
+      sendClicked:!!state?.sent, submissionConfirmed:!!state?.confirmed};
+  };
   const responses = () => [...document.querySelectorAll('model-response')]
     .filter(el => !el.closest('user-query'));
   const responseText = el => {
@@ -55,7 +73,8 @@ READ_LATEST_RESPONSE_JS = _script(r"""
   return {site:true, assistantCount:rows.length, text, lastText:text,
     generating:stopping, stopVisible:stopping,
     diagnostics:{provider:'gemini', responses:rows.length,
-      conversationChars:rows.reduce((sum, row) => sum + (row.textContent || '').length, 0)}};
+      conversationChars:rows.reduce((sum, row) => sum + (row.textContent || '').length, 0),
+      ...submissionState()}};
 """)
 
 
@@ -101,7 +120,7 @@ def make_send_message_js(message, request_id):
       const ok = normalize(draft(editor)) === normalize(text);
       if (ok) {
         window.__srtOutboundPrompt = text;
-        window.__srtGeminiSend = {id, sent:false, text};
+        window.__srtGeminiSend = {id, sent:false, text, confirmed:false};
       }
       return ok ? {ok:true, prepared:true} : {
         ok:false, retryable:!normalize(draft(editor)),
@@ -123,6 +142,7 @@ SEND_MESSAGE_JS = _script(r"""
     'button[aria-label="Gửi tin nhắn"], button[aria-label="Gửi câu lệnh"]'
   )].find(el => shown(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
   if (!button) return {ok:false, retryable:true, why:'Nút gửi Gemini chưa sẵn sàng.'};
+  state.matchingQueriesBefore = matchingQueries(state.text);
   state.sent = true;
   button.click();
   return {ok:true};

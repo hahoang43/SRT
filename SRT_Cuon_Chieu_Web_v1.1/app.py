@@ -163,6 +163,8 @@ class App(QMainWindow):
         self.auto_last_error = ''
         self.auto_diagnostic = None
         self.auto_prepare_reason = ''
+        self.auto_submission_diagnostic = {}
+        self.auto_submission_confirmed = False
         self.auto_send_state = 'idle'
         self.auto_received = None
         self.next_batch_timer = QTimer(self)
@@ -1084,6 +1086,8 @@ class App(QMainWindow):
         self.auto_editor_deadline = time.monotonic() + self.timeout_spin.value()
         self.auto_editor_wait_logged = False
         self.auto_prepare_reason = ''
+        self.auto_submission_diagnostic = {}
+        self.auto_submission_confirmed = False
         if self._uses_gemini():
             self.gemini_status.setText(f'Gemini đang dịch lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}…')
             self.log(f'Đang gửi Gemini lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}.')
@@ -1368,8 +1372,24 @@ class App(QMainWindow):
         self.auto_send_state = 'sent'
         self.auto_deadline = time.monotonic() + self.timeout_spin.value()
         self.auto_hard_deadline = time.monotonic() + 900
-        self.log(f'✓ Đã bấm gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}; đang chờ JSON.')
+        waiting = 'đang xác nhận prompt xuất hiện trong hội thoại Gemini' if self._uses_gemini_web() else 'đang chờ JSON'
+        self.log(f'✓ Đã bấm gửi lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}; {waiting}.')
         self._schedule_poll(1500)
+
+    def _response_timeout_message(self):
+        batch = f'{self.auto_batch[0].number}–{self.auto_batch[-1].number}'
+        diagnostic = self.auto_submission_diagnostic
+        if self._uses_gemini_web() and diagnostic.get('sendClicked'):
+            if self.auto_submission_confirmed:
+                detail = 'Prompt đã xuất hiện trong hội thoại Gemini nhưng chưa đọc được JSON dịch mới hợp lệ.'
+            elif diagnostic.get('draftMatchesBatch'):
+                detail = 'Prompt vẫn còn trong ô nhập sau khi bấm gửi; chưa xác nhận prompt xuất hiện trong hội thoại Gemini.'
+            else:
+                detail = 'Ô nhập đã trống hoặc thay đổi nhưng chưa xác nhận prompt xuất hiện trong hội thoại Gemini.'
+            return (f'Lô {batch}: {detail} Đã giữ tiến độ; kiểm tra thông báo và hội thoại Gemini '
+                    'trước khi tiếp tục. Ứng dụng chưa tự gửi lại lô đã bấm gửi.')
+        return (f'Chưa nhận được JSON dịch mới hợp lệ cho lô {batch}. Không dùng phản hồi cũ thay cho lô này. '
+                'Bản dịch trước đó vẫn được lưu; kiểm tra phản hồi hoặc thông báo thực tế trên Web trước khi thử lại.')
 
     def _poll_batch_response(self):
         if not self.auto_session or not self.batch_waiting_for_json or self.auto_poll_busy:
@@ -1377,7 +1397,7 @@ class App(QMainWindow):
         if time.monotonic() >= min(self.auto_deadline, self.auto_hard_deadline):
             if self._try_recovery('phản hồi', self._retry_response_read, 'Chỉ đọc lại lô đang chờ, không gửi lại prompt.'):
                 return
-            self._auto_failed(self.auto_last_error or f'Chưa nhận được JSON dịch mới hợp lệ cho lô {self.auto_batch[0].number}–{self.auto_batch[-1].number}. Không dùng phản hồi cũ thay cho lô này. Bản dịch trước đó vẫn được lưu; kiểm tra phản hồi hoặc thông báo thực tế trên Web trước khi thử lại.')
+            self._auto_failed(self.auto_last_error or self._response_timeout_message())
             return
         self.auto_poll_busy = True
         self._run_batch_script(read_with_capture(self._web_read_js(), self.auto_generation), self._on_batch_response)
@@ -1395,6 +1415,11 @@ class App(QMainWindow):
             return
         generating = bool(result.get('generating')) if isinstance(result, dict) else True
         diagnostics = result.get('diagnostics', {}) if isinstance(result, dict) else {}
+        if self._uses_gemini_web() and isinstance(diagnostics, dict):
+            self.auto_submission_diagnostic = diagnostics
+            if diagnostics.get('submissionConfirmed') and not self.auto_submission_confirmed:
+                self.auto_submission_confirmed = True
+                self.log(f'✓ Prompt lô {self.auto_batch[0].number}–{self.auto_batch[-1].number} đã xuất hiện trong hội thoại Gemini; đang chờ JSON.')
         chars = diagnostics.get('conversationChars') if isinstance(diagnostics, dict) else None
         if isinstance(chars, int) and chars > 0:
             if generating and chars != getattr(self, 'auto_dom_chars', None):
